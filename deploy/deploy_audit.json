@@ -1,0 +1,48 @@
+{
+  "generated_at_local": "2026-01-25 18:10:40",
+  "deploy_dir": "/content/cem5113/sutam/deploy",
+  "files": {
+    "full_fc.parquet": {
+      "path": "/content/cem5113/sutam/deploy/full_fc.parquet",
+      "bytes": 2797555,
+      "mtime": "2026-01-25 17:35:14",
+      "sha256": "138f9298eb2eec46dee89bd7db924a64ff381ca7f7cc1c8ec7d055a626357e9a"
+    },
+    "ops_brief_topk.csv": {
+      "path": "/content/cem5113/sutam/deploy/ops_brief_topk.csv",
+      "bytes": 264305,
+      "mtime": "2026-01-25 17:35:14",
+      "sha256": "4abe49e8ff4f66153c5388e2e1e48e97e89eb21926309e0ef758be531f808b3e"
+    },
+    "ops_brief_geoid_daily.csv": {
+      "path": "/content/cem5113/sutam/deploy/ops_brief_geoid_daily.csv",
+      "bytes": 141102,
+      "mtime": "2026-01-25 17:35:14",
+      "sha256": "8cd4185d87837713859d0bb1c4ec6a32ddd5bcbdf5cb1481253d0664aca600ff"
+    },
+    "geoid_profile.parquet": {
+      "path": "/content/cem5113/sutam/deploy/geoid_profile.parquet",
+      "bytes": 52691,
+      "mtime": "2026-01-25 17:28:25",
+      "sha256": "474e8e8c3377dcd708d404e2fa5ac29e7c09cc7a90befcc4a853acc9afc4732e"
+    },
+    "geoid_profile.csv": {
+      "path": "/content/cem5113/sutam/deploy/geoid_profile.csv",
+      "bytes": 94637,
+      "mtime": "2026-01-25 17:28:26",
+      "sha256": "85c4cae14568ab6ada6dabe32a040987c2f62fdca9a7866218c7535a963e8d80"
+    },
+    "geoid_stats_5y.parquet": {
+      "path": "/content/cem5113/sutam/deploy/geoid_stats_5y.parquet",
+      "bytes": 60082,
+      "mtime": "2026-01-25 17:29:06",
+      "sha256": "beaa56e9af246a5f04fb09c3e1ac4fb419253c13122a18725ddb53632afbe951"
+    },
+    "sf_city_baseline_5y.parquet": {
+      "path": "/content/cem5113/sutam/deploy/sf_city_baseline_5y.parquet",
+      "bytes": 12885,
+      "mtime": "2026-01-25 17:29:07",
+      "sha256": "d3e286bbd7bbad1395cc8c66f8b26d37662203830cba6d46a82d133dc9a14103"
+    }
+  }
+}
