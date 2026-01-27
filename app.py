@@ -1,21 +1,40 @@
-# app.py — SUTAM (Kurumsal Ana Sayfa)
+# app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı ana sayfa)
+from __future__ import annotations
+
 import os
 import json
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 
-# ---------------------------
-# Page config (FIRST)
-# ---------------------------
+# ============================
+# 0) Page config (FIRST)
+# ============================
 st.set_page_config(
     page_title="SUTAM — Operasyon Paneli",
     page_icon="🛰️",
     layout="wide",
 )
 
-# ---------------------------
-# Corporate CSS (Inter-like)
-# ---------------------------
+# ============================
+# 1) Optional autorefresh (60s)
+#    - sadece ana sayfada saat/rozet güncellensin
+# ============================
+# Not: st_autorefresh eklentisi yoksa otomatik devre dışı kalır.
+def enable_autorefresh_60s():
+    try:
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=60_000, key="sutam_clock_refresh")
+    except Exception:
+        # paket yoksa sorun değil; saat sadece rerun ile güncellenir
+        pass
+
+enable_autorefresh_60s()
+
+# ============================
+# 2) Corporate CSS
+# ============================
 def apply_corporate_style():
     st.markdown(
         """
@@ -26,31 +45,32 @@ def apply_corporate_style():
             color: #0f172a; /* slate-900 */
           }
 
-          /* Main container spacing */
+          /* Main container */
           .block-container {
-            padding-top: 1.25rem;
+            padding-top: 1.15rem;
             padding-bottom: 2.5rem;
             max-width: 1200px;
           }
 
           /* Headings */
-          h1, h2, h3 {
-            letter-spacing: -0.02em;
-          }
+          h1, h2, h3 { letter-spacing: -0.02em; }
           h1 { font-size: 1.65rem; margin-bottom: .25rem; }
-          h2 { font-size: 1.15rem; margin-top: 1.2rem; }
+          h2 { font-size: 1.15rem; margin-top: 1.1rem; }
           p, li { font-size: 0.95rem; line-height: 1.5; }
 
-          /* Subtle caption */
           .sutam-caption {
             color: #475569; /* slate-600 */
-            font-size: 0.9rem;
+            font-size: 0.90rem;
             margin-top: 0.15rem;
+          }
+          .sutam-muted {
+            color: #64748b;
+            font-size: 0.88rem;
           }
 
           /* Cards */
           .sutam-card {
-            border: 1px solid #e2e8f0; /* slate-200 */
+            border: 1px solid #e2e8f0;
             border-radius: 14px;
             padding: 14px 14px;
             background: #ffffff;
@@ -63,7 +83,7 @@ def apply_corporate_style():
             color: #0f172a;
           }
           .sutam-card-text {
-            color: #334155; /* slate-700 */
+            color: #334155;
             font-size: 0.92rem;
             margin: 0;
           }
@@ -83,17 +103,11 @@ def apply_corporate_style():
             border-radius: 10px;
             color: #0f172a;
           }
-          .sutam-muted {
-            color: #64748b;
-            font-size: 0.88rem;
-          }
 
-          /* Sidebar */
-          section[data-testid="stSidebar"] {
-            border-right: 1px solid #e2e8f0;
-          }
+          /* Sidebar border */
+          section[data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
 
-          /* Buttons (subtle) */
+          /* Buttons */
           .stButton button {
             border-radius: 10px !important;
             padding: 0.55rem 0.85rem !important;
@@ -106,10 +120,27 @@ def apply_corporate_style():
 
 apply_corporate_style()
 
-# ---------------------------
-# Data update badge (optional)
-# If you have deploy_audit.json use it; otherwise show "-" safely
-# ---------------------------
+# ============================
+# 3) Hide Streamlit default Pages nav ("app" yazısı dahil)
+# ============================
+def hide_streamlit_default_nav():
+    st.markdown(
+        """
+        <style>
+          /* Streamlit default sidebar navigation (üstte app + sayfa listesi) */
+          [data-testid="stSidebarNav"] { display: none !important; }
+          section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] { display: none !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+hide_streamlit_default_nav()
+
+# ============================
+# 4) Fast "last update" badge (VERY LIGHT)
+#    - ana sayfa hızlı açılsın diye sadece küçük json okunur (varsa)
+# ============================
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
 AUDIT_CAND = [
     f"{DATA_DIR}/deploy_audit.json",
@@ -121,6 +152,7 @@ def load_deploy_time_utc() -> str:
     for p in AUDIT_CAND:
         try:
             if p.startswith("http://") or p.startswith("https://"):
+                # remote json (hafif ama url ise yavaş olabilir)
                 obj = pd.read_json(p, typ="series").to_dict()
             elif os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
@@ -133,37 +165,44 @@ def load_deploy_time_utc() -> str:
             continue
     return "-"
 
-DEPLOY_TIME = load_deploy_time_utc()
+# Cache: aynı rerun içinde tekrar okumasın (hız)
+@st.cache_data(show_spinner=False)
+def _cached_deploy_time() -> str:
+    return load_deploy_time_utc()
 
-# ---------------------------
-# Sidebar (minimal, corporate)
-# ---------------------------
-st.sidebar.title("⚙️ Menü")
-st.sidebar.caption(f"DATA_DIR: {DATA_DIR}")
-st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
-st.sidebar.divider()
+DEPLOY_TIME = _cached_deploy_time()
 
-st.sidebar.markdown("**Sayfalar**")
-st.sidebar.page_link("app.py", label="🏠 Ana Sayfa", icon="🏠")
-# Bu sayfaları gerçekten kullanacaksan pages/ altında oluştur:
-# st.sidebar.page_link("pages/1_🗺️_Anlık_Risk_Haritası.py", "🗺️ Anlık Risk Haritası")
-# st.sidebar.page_link("pages/2_📊_Suç_ve_Zarar_Tahmini.py", "📊 Suç & Suç Zararı Tahmini")
-# st.sidebar.page_link("pages/3_👮_Devriye_Planlama.py", "👮 Devriye Planlama")
-# st.sidebar.page_link("pages/4_📄_Raporlar.py", "📄 Raporlar & Öneriler")
+# ============================
+# 5) Corporate Sidebar (ONLY requested items + clock)
+# ============================
+def render_corporate_sidebar():
+    st.sidebar.markdown("## Menü")
+    st.sidebar.caption(f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
+    st.sidebar.divider()
 
-# ---------------------------
-# HOME PAGE
-# ---------------------------
-# Hero
+    # ✅ Sadece istenen 5 link
+    st.sidebar.page_link("app.py", label="🏠 Ana Sayfa", icon="🏠")
+
+    # Aşağıdaki dosya adlarını SENİN pages/ dosyalarınla birebir eşleştir
+    st.sidebar.page_link("pages/1_Anlik_Risk_Haritasi.py", label="🗺️ Anlık Risk Haritası", icon="🗺️")
+    st.sidebar.page_link("pages/2_Suc_ve_Zarar_Tahmini.py", label="📊 Suç & Suç Zararı Tahmini", icon="📊")
+    st.sidebar.page_link("pages/3_Devriye_Planlama.py", label="👮 Devriye Planlama", icon="👮")
+    st.sidebar.page_link("pages/4_Raporlar_ve_Oneriler.py", label="📄 Raporlar & Kolluğa Öneriler", icon="📄")
+
+render_corporate_sidebar()
+
+# ============================
+# 6) HOME (FAST • no heavy data load)
+# ============================
 st.markdown("# SUTAM — Suç Risk Karar Destek Paneli")
 st.markdown(
     f'<div class="sutam-caption">Kolluk operasyonları için mekânsal-zamansal risk farkındalığı • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
     unsafe_allow_html=True,
 )
 
-st.write("")  # whitespace
+st.write("")
 
-# Intro callout (short, institutional)
 st.markdown(
     """
     <div class="sutam-callout">
@@ -175,10 +214,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Cards: What you can do (max 4, short)
 st.write("")
 c1, c2, c3, c4 = st.columns(4, gap="medium")
-
 with c1:
     st.markdown(
         """
@@ -223,7 +260,6 @@ with c4:
 st.write("")
 st.divider()
 
-# Ethics + Responsible use (short, visible)
 st.subheader("⚖️ Etik ve Sorumlu Kullanım Notları")
 st.markdown(
     """
@@ -234,7 +270,7 @@ st.markdown(
         <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
       </ul>
       <div class="sutam-muted" style="margin-top: 8px;">
-        Not: Teknik performans metrikleri ve model ayrıntıları “Raporlar” bölümünde (analist odaklı) sunulur.
+        Not: Teknik performans metrikleri ve model ayrıntıları “Raporlar & Kolluğa Öneriler” bölümünde (analist odaklı) sunulur.
       </div>
     </div>
     """,
@@ -244,65 +280,46 @@ st.markdown(
 st.write("")
 st.divider()
 
-# Map preview (static image) + quick navigation
 st.subheader("🗺️ Anlık Risk Haritası — Ön İzleme")
 
-left, right = st.columns([1.35, 1], gap="large")
+# Hız için: local görsel göster (assets/)
+preview_path_candidates = [
+    "assets/risk_map_preview.png",
+    "assets/risk_map_preview.jpg",
+    "assets/risk_map_preview.jpeg",
+]
+preview_path = next((p for p in preview_path_candidates if os.path.exists(p)), None)
 
-with left:
-    # Put your preview image here (recommended):
-    # assets/risk_map_preview.png  (or jpg)
-    preview_path_candidates = [
-        "assets/risk_map_preview.png",
-        "assets/risk_map_preview.jpg",
-        "assets/risk_map_preview.jpeg",
-    ]
-    preview_path = next((p for p in preview_path_candidates if os.path.exists(p)), None)
+colL, colR = st.columns([1.45, 1], gap="large")
 
+with colL:
     if preview_path:
         st.image(preview_path, use_container_width=True)
-    else:
-        st.info(
-            "Ön izleme görseli eklemek için `assets/risk_map_preview.png` dosyasını repoya koy.\n\n"
-            "Geçici olarak bu alan boş bırakıldı."
+        st.markdown(
+            '<div class="sutam-muted">Harita, risk düzeylerini 5’li ölçekle (Düşük → Çok Yüksek) gösterir. Etkileşimli analiz için “Anlık Risk Haritası” sayfasına geçiniz.</div>',
+            unsafe_allow_html=True,
         )
+    else:
+        st.info("Ön izleme için `assets/risk_map_preview.png` ekleyin.")
 
-    st.markdown(
-        '<div class="sutam-muted">Harita, risk düzeylerini 5’li ölçekle (Düşük → Çok Yüksek) gösterir. Etkileşimli analiz için ilgili sayfaya geçiniz.</div>',
-        unsafe_allow_html=True,
-    )
-
-with right:
+with colR:
     st.markdown(
         """
         <div class="sutam-card">
-          <div class="sutam-card-title">Hızlı Erişim</div>
-          <p class="sutam-card-text">Detaylı inceleme için aşağıdaki sayfalara geçin.</p>
+          <div class="sutam-card-title">Kullanım</div>
+          <p class="sutam-card-text">Detaylı inceleme ve filtreleme için sol menüden ilgili sayfayı seçiniz.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
     st.write("")
-
-    # Eğer pages/ dosyalarını oluşturduysan aşağıdaki page_link'ler aktif olur.
-    # Şimdilik butonlar placeholder; sayfalar gelince page_link ile değiştir.
-    go_map = st.button("🗺️ Anlık Risk Haritasına Git", use_container_width=True)
-    go_plan = st.button("👮 Devriye Planlamaya Git", use_container_width=True)
-    go_reports = st.button("📄 Raporlara Git", use_container_width=True)
-
-    if go_map:
-        st.info("Sayfa oluşturunca: pages/1_🗺️_Anlık_Risk_Haritası.py → st.page_link ile bağlayacağız.")
-    if go_plan:
-        st.info("Sayfa oluşturunca: pages/3_👮_Devriye_Planlama.py → st.page_link ile bağlayacağız.")
-    if go_reports:
-        st.info("Sayfa oluşturunca: pages/4_📄_Raporlar.py → st.page_link ile bağlayacağız.")
-
-# Optional: advanced diagnostics hidden
-with st.expander("🧪 Gelişmiş Tanılama (Analist)", expanded=False):
-    st.write(
-        {
-            "DATA_DIR": DATA_DIR,
-            "deploy_time_utc": DEPLOY_TIME,
-            "audit_candidates": AUDIT_CAND,
-        }
+    st.markdown(
+        """
+        <div class="sutam-muted">
+          • Harita: 5’li risk bandı (Düşük/Orta/Yüksek)<br/>
+          • Devriye: kapasiteye göre Top-K öncelik<br/>
+          • Raporlar: özet + saha önerileri
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
