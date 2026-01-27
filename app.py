@@ -202,7 +202,7 @@ def render_home():
         st.markdown(
             """
             <div class="sutam-card">
-              <div class="sutam-card-title">📊 Suç & Zarar Tahmini</div>
+              <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
               <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
             </div>
             """,
@@ -222,7 +222,7 @@ def render_home():
         st.markdown(
             """
             <div class="sutam-card">
-              <div class="sutam-card-title">📄 Raporlar & Öneriler</div>
+              <div class="sutam-card-title">📄 Raporlar & Kolluğa Öneriler</div>
               <p class="sutam-card-text">Özet çıktı ve saha önerilerini indirilebilir sunar.</p>
             </div>
             """,
