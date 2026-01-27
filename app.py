@@ -170,7 +170,7 @@ render_corporate_sidebar(current_page)
 def render_home():
     st.markdown("# SUTAM — Suç Tahmin Modeli")
     st.markdown(
-        f'<div class="sutam-caption">Kolluk operasyonları için mekânsal-zamansal risk farkındalığı • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
+        f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Zarar Etkisi, Risk Analizi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
         unsafe_allow_html=True,
     )
 
