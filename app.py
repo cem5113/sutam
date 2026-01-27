@@ -168,7 +168,7 @@ render_corporate_sidebar(current_page)
 # 6) Page renderers (Home is FAST)
 # ---------------------------
 def render_home():
-    st.markdown("# SUTAM — Suç Risk Karar Destek Paneli")
+    st.markdown("# SUTAM — Suç Tahmin Modeli")
     st.markdown(
         f'<div class="sutam-caption">Kolluk operasyonları için mekânsal-zamansal risk farkındalığı • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
         unsafe_allow_html=True,
@@ -251,36 +251,6 @@ def render_home():
 
     st.write("")
     st.divider()
-
-    st.subheader("🗺️ Anlık Risk Haritası — Ön İzleme")
-
-    preview_path_candidates = [
-        "assets/risk_map_preview.png",
-        "assets/risk_map_preview.jpg",
-        "assets/risk_map_preview.jpeg",
-    ]
-    preview_path = next((p for p in preview_path_candidates if os.path.exists(p)), None)
-
-    colL, colR = st.columns([1.45, 1], gap="large")
-    with colL:
-        if preview_path:
-            st.image(preview_path, use_container_width=True)
-            st.markdown(
-                '<div class="sutam-muted">Harita, risk düzeylerini 5’li ölçekle (Düşük → Çok Yüksek) gösterir. Etkileşimli analiz için sol menüden ilgili sayfayı seçiniz.</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.info("Ön izleme için `assets/risk_map_preview.png` ekleyin.")
-    with colR:
-        st.markdown(
-            """
-            <div class="sutam-card">
-              <div class="sutam-card-title">İpucu</div>
-              <p class="sutam-card-text">Detaylı inceleme için sol menüden “Anlık Risk Haritası” sayfasına geçiniz.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
 def render_placeholder(title: str):
     st.markdown(f"# {title}")
