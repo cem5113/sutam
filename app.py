@@ -213,7 +213,7 @@ def render_home():
             """
             <div class="sutam-card">
               <div class="sutam-card-title">👮 Devriye Planlama</div>
-              <p class="sutam-card-text">Risk/zarar odaklı devriye önerileri sunulur.</p>
+              <p class="sutam-card-text">Risk/zarar odaklı devriye önerileri sunar.</p>
             </div>
             """,
             unsafe_allow_html=True,
