@@ -1,8 +1,9 @@
-# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • page_link ile stabil)
+# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • page_link/switch_page yok)
 from __future__ import annotations
 
 import os
 import json
+import runpy
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,7 +20,7 @@ st.set_page_config(
 )
 
 # ---------------------------
-# 1) Optional autorefresh (60s)
+# 1) Autorefresh (60s) — sadece saat için
 # ---------------------------
 def enable_autorefresh_60s():
     try:
@@ -31,7 +32,7 @@ def enable_autorefresh_60s():
 enable_autorefresh_60s()
 
 # ---------------------------
-# 2) Corporate CSS + hide default Pages nav
+# 2) Corporate CSS + default nav hide
 # ---------------------------
 def apply_corporate_style():
     st.markdown(
@@ -81,7 +82,7 @@ def apply_corporate_style():
 
           section[data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
 
-          /* ✅ Streamlit default Pages nav ("app" ve otomatik liste) gizle */
+          /* default Pages nav gizle (app + otomatik liste) */
           [data-testid="stSidebarNav"] { display: none !important; }
           section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] { display: none !important; }
         </style>
@@ -92,7 +93,7 @@ def apply_corporate_style():
 apply_corporate_style()
 
 # ---------------------------
-# 3) Lightweight "last update" badge (FAST)
+# 3) Lightweight "last update" badge
 # ---------------------------
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
 AUDIT_CAND = [
@@ -124,11 +125,33 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Sidebar (ONLY 5 items + live SF clock) — ✅ page_link
+# 4) Router (query param)
 # ---------------------------
-def render_corporate_sidebar():
-    st.sidebar.markdown("## Kurumsal Menü")
+PAGES = {
+    "home": "🏠 Ana Sayfa",
+    "map": "🗺️ Anlık Risk Haritası",
+    "forecast": "📊 Suç & Suç Zararı Tahmini",
+    "patrol": "👮 Devriye Planlama",
+    "reports": "📄 Raporlar & Kolluğa Öneriler",
+}
 
+PAGE_FILES = {
+    "map": "pages/1_Anlik_Risk_Haritasi.py",
+    "forecast": "pages/2_Suc_Zarar_Tahmini.py",
+    "patrol": "pages/3_Devriye_Planlama.py",
+    "reports": "pages/4_Raporlar_Oneriler.py",
+}
+
+def get_current_page() -> str:
+    p = st.query_params.get("p", "home")
+    return p if p in PAGES else "home"
+
+def set_page(p: str):
+    st.query_params["p"] = p
+    st.rerun()
+
+def render_corporate_sidebar(active_key: str):
+    st.sidebar.markdown("## Kurumsal Menü")
     try:
         sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
         st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
@@ -138,95 +161,118 @@ def render_corporate_sidebar():
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
-    # ✅ Bunlar “link”tir: tıklanınca sayfaya gider. En stabil yöntem.
-    st.sidebar.page_link("app.py", label="🏠 Ana Sayfa")
-    st.sidebar.page_link("pages/1_Anlik_Risk_Haritasi.py", label="🗺️ Anlık Risk Haritası")
-    st.sidebar.page_link("pages/2_Suc_Zarar_Tahmini.py", label="📊 Suç & Suç Zararı Tahmini")
-    st.sidebar.page_link("pages/3_Devriye_Planlama.py", label="👮 Devriye Planlama")
-    st.sidebar.page_link("pages/4_Raporlar_Oneriler.py", label="📄 Raporlar & Kolluğa Öneriler")
+    for key, label in PAGES.items():
+        if key == active_key:
+            st.sidebar.button(label, use_container_width=True, disabled=True)
+        else:
+            if st.sidebar.button(label, use_container_width=True):
+                set_page(key)
 
-render_corporate_sidebar()
+def run_page_file(path: str):
+    if not os.path.exists(path):
+        st.error(f"Sayfa dosyası bulunamadı: `{path}`")
+        return
+    # streamlit page registry’ye ihtiyaç yok: dosyayı direkt çalıştır
+    runpy.run_path(path, run_name="__main__")
 
 # ---------------------------
-# 5) HOME (FAST: parquet okumaz)
+# 5) Home (FAST)
 # ---------------------------
-st.markdown("# SUTAM — Operasyon Paneli")
-st.markdown(
-    f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Risk Analizi, Zarar Etkisi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
-    unsafe_allow_html=True,
-)
+def render_home():
+    st.markdown("# SUTAM — Operasyon Paneli")
+    st.markdown(
+        f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Risk Analizi, Zarar Etkisi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
+        unsafe_allow_html=True,
+    )
 
-st.write("")
-st.markdown(
-    """
-    <div class="sutam-callout">
-      <b>Bu uygulama ne yapar?</b><br/>
-      Geçmiş suç olayları ve bağlamsal göstergelerden yararlanarak şehir genelinde <b>göreli risk düzeylerini</b> üretir ve
-      devriye planlama süreçlerine <b>karar destek</b> sağlar.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.write("")
-c1, c2, c3, c4 = st.columns(4, gap="medium")
-with c1:
+    st.write("")
     st.markdown(
         """
-        <div class="sutam-card">
-          <div class="sutam-card-title">🗺️ Anlık Risk Haritası</div>
-          <p class="sutam-card-text">5’li risk seviyesi ile sıcak bölgeleri hızlıca görselleştirir.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with c2:
-    st.markdown(
-        """
-        <div class="sutam-card">
-          <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
-          <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with c3:
-    st.markdown(
-        """
-        <div class="sutam-card">
-          <div class="sutam-card-title">👮 Devriye Planlama</div>
-          <p class="sutam-card-text">Risk/zarar odaklı devriye önceliklendirmesi sunar.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-with c4:
-    st.markdown(
-        """
-        <div class="sutam-card">
-          <div class="sutam-card-title">📄 Raporlar & Öneriler</div>
-          <p class="sutam-card-text">Özet çıktı ve saha önerilerini indirilebilir sunar.</p>
+        <div class="sutam-callout">
+          <b>Bu uygulama ne yapar?</b><br/>
+          Geçmiş suç olayları ve bağlamsal göstergelerden yararlanarak şehir genelinde <b>göreli risk düzeylerini</b> üretir ve
+          devriye planlama süreçlerine <b>karar destek</b> sağlar.
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-st.write("")
-st.divider()
+    st.write("")
+    c1, c2, c3, c4 = st.columns(4, gap="medium")
+    with c1:
+        st.markdown(
+            """
+            <div class="sutam-card">
+              <div class="sutam-card-title">🗺️ Anlık Risk Haritası</div>
+              <p class="sutam-card-text">5’li risk seviyesi ile sıcak bölgeleri hızlıca görselleştirir.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            """
+            <div class="sutam-card">
+              <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
+              <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            """
+            <div class="sutam-card">
+              <div class="sutam-card-title">👮 Devriye Planlama</div>
+              <p class="sutam-card-text">Top-K kapasiteye göre öncelik önerir.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c4:
+        st.markdown(
+            """
+            <div class="sutam-card">
+              <div class="sutam-card-title">📄 Raporlar & Öneriler</div>
+              <p class="sutam-card-text">Özet çıktı ve saha önerilerini indirilebilir sunar.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-st.subheader("⚖️ Etik ve Sorumlu Kullanım Notları")
-st.markdown(
-    """
-    <div class="sutam-ethics">
-      <ul style="margin: 0 0 0 1.15rem;">
-        <li>Çıktılar <b>bağlayıcı değildir</b>; nihai karar her zaman <b>insan değerlendirmesine</b> aittir.</li>
-        <li>Sistem <b>bireyleri hedeflemez</b>; yalnızca mekânsal-zamansal örüntüler üzerinden risk farkındalığı sağlar.</li>
-        <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
-      </ul>
-      <div class="sutam-muted" style="margin-top: 8px;">
-        Not: Teknik performans metrikleri ve model ayrıntıları analist odaklı raporlamada sunulur.
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    # İstersen burada kurumsal bir görsel göster:
+    img = "assets/risk_map_preview.png"
+    if os.path.exists(img):
+        st.write("")
+        st.image(img, caption="Anlık Risk Haritası — Ön izleme", use_container_width=True)
+
+    st.write("")
+    st.divider()
+
+    st.subheader("⚖️ Etik ve Sorumlu Kullanım Notları")
+    st.markdown(
+        """
+        <div class="sutam-ethics">
+          <ul style="margin: 0 0 0 1.15rem;">
+            <li>Çıktılar <b>bağlayıcı değildir</b>; nihai karar her zaman <b>insan değerlendirmesine</b> aittir.</li>
+            <li>Sistem <b>bireyleri hedeflemez</b>; yalnızca mekânsal-zamansal örüntüler üzerinden risk farkındalığı sağlar.</li>
+            <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; saha bilgisiyle birlikte yorumlanmalıdır.</li>
+          </ul>
+          <div class="sutam-muted" style="margin-top: 8px;">
+            Not: Teknik ayrıntılar analist odaklı raporlamada sunulur.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ---------------------------
+# 6) Render
+# ---------------------------
+current_page = get_current_page()
+render_corporate_sidebar(current_page)
+
+if current_page == "home":
+    render_home()
+else:
+    run_page_file(PAGE_FILES[current_page])
