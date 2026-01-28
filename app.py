@@ -1,4 +1,4 @@
-# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • switch_page)
+# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • page_link ile stabil)
 from __future__ import annotations
 
 import os
@@ -81,7 +81,7 @@ def apply_corporate_style():
 
           section[data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
 
-          /* ✅ Streamlit default Pages nav ("app" ve liste) gizle */
+          /* ✅ Streamlit default Pages nav ("app" ve otomatik liste) gizle */
           [data-testid="stSidebarNav"] { display: none !important; }
           section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] { display: none !important; }
         </style>
@@ -124,8 +124,7 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Sidebar (ONLY 5 items + live SF clock)
-#    - Navigation uses st.switch_page (NO imports, NO query params)
+# 4) Sidebar (ONLY 5 items + live SF clock) — ✅ page_link
 # ---------------------------
 def render_corporate_sidebar():
     st.sidebar.markdown("## Kurumsal Menü")
@@ -139,21 +138,12 @@ def render_corporate_sidebar():
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
-    # ✅ Pages paths: repo'daki gerçek dosyalar
-    if st.sidebar.button("🏠 Ana Sayfa", use_container_width=True):
-        st.switch_page("app.py")
-
-    if st.sidebar.button("🗺️ Anlık Risk Haritası", use_container_width=True):
-        st.switch_page("pages/1_Anlik_Risk_Haritasi.py")
-
-    if st.sidebar.button("📊 Suç & Suç Zararı Tahmini", use_container_width=True):
-        st.switch_page("pages/2_Suc_Zarar_Tahmini.py")
-
-    if st.sidebar.button("👮 Devriye Planlama", use_container_width=True):
-        st.switch_page("pages/3_Devriye_Planlama.py")
-
-    if st.sidebar.button("📄 Raporlar & Kolluğa Öneriler", use_container_width=True):
-        st.switch_page("pages/4_Raporlar_Oneriler.py")
+    # ✅ Bunlar “link”tir: tıklanınca sayfaya gider. En stabil yöntem.
+    st.sidebar.page_link("app.py", label="🏠 Ana Sayfa")
+    st.sidebar.page_link("pages/1_Anlik_Risk_Haritasi.py", label="🗺️ Anlık Risk Haritası")
+    st.sidebar.page_link("pages/2_Suc_Zarar_Tahmini.py", label="📊 Suç & Suç Zararı Tahmini")
+    st.sidebar.page_link("pages/3_Devriye_Planlama.py", label="👮 Devriye Planlama")
+    st.sidebar.page_link("pages/4_Raporlar_Oneriler.py", label="📄 Raporlar & Kolluğa Öneriler")
 
 render_corporate_sidebar()
 
