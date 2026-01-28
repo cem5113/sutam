@@ -1,4 +1,4 @@
-# pages/3_🚓_Devriye_Planlama.py
+# pages/Devriye_Planlama.py
 import os
 import streamlit as st
 import pandas as pd
