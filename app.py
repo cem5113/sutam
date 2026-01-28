@@ -1,6 +1,7 @@
 # app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
-# ✅ Bu sürüm: senin mevcut dosya adlarınla uyumlu
+# ✅ Uyumlu pages dosyaları:
 # pages/
+#   __init__.py
 #   Anlik_Risk_Haritasi.py
 #   Suc_Zarar_Tahmini.py
 #   Devriye_Planlama.py
@@ -10,22 +11,37 @@ from __future__ import annotations
 
 import os
 import json
+import sys
 import traceback
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 import pandas as pd
 
-import sys
-from pathlib import Path
-
+# ---------------------------
+# 0) Ensure project root on sys.path (deploy/devcontainer güvenliği)
+# ---------------------------
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 # ---------------------------
-# 0) Page config (FIRST)
+# 1) Safe importer (debug-friendly)
+# ---------------------------
+def _safe_import(module_path: str, func_name: str):
+    try:
+        mod = __import__(module_path, fromlist=[func_name])
+        fn = getattr(mod, func_name)
+        if not callable(fn):
+            raise TypeError(f"{module_path}.{func_name} callable değil.")
+        return fn, None
+    except Exception:
+        return None, traceback.format_exc()
+
+# ---------------------------
+# 2) Page config (FIRST Streamlit command)
 # ---------------------------
 st.set_page_config(
     page_title="SUTAM — Operasyon Paneli",
@@ -34,20 +50,19 @@ st.set_page_config(
 )
 
 # ---------------------------
-# 1) Optional autorefresh (60s)
+# 3) Optional autorefresh (60s)
 # ---------------------------
 def enable_autorefresh_60s():
     try:
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=60_000, key="sutam_clock_refresh")
     except Exception:
-        # paket yoksa sessiz geç
         pass
 
 enable_autorefresh_60s()
 
 # ---------------------------
-# 2) Corporate CSS + default nav hide
+# 4) Corporate CSS + default nav hide
 # ---------------------------
 def apply_corporate_style():
     st.markdown(
@@ -97,7 +112,7 @@ def apply_corporate_style():
 
           section[data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
 
-          /* ✅ Streamlit default Pages nav ("app" ve liste) gizle */
+          /* ✅ Streamlit default Pages nav gizle */
           [data-testid="stSidebarNav"] { display: none !important; }
           section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] { display: none !important; }
         </style>
@@ -108,7 +123,7 @@ def apply_corporate_style():
 apply_corporate_style()
 
 # ---------------------------
-# 3) Lightweight "last update" badge
+# 5) Lightweight "last update" badge
 # ---------------------------
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
 AUDIT_CAND = [
@@ -140,32 +155,14 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Import page modules (LAZY + debug-friendly)
-#    ✅ Dosya adlarınla uyumlu: pages/Anlik_Risk_Haritasi.py vb.
-#    ✅ Hata olursa ekrana traceback basar (gizlemez)
+# 6) Import page modules (lazy-ish, debug-friendly)
 # ---------------------------
-def _safe_import(module_path: str, func_name: str):
-    try:
-        mod = __import__(module_path, fromlist=[func_name])
-        fn = getattr(mod, func_name)
-        if not callable(fn):
-            raise TypeError(f"{module_path}.{func_name} callable değil.")
-        return fn, None
-    except Exception:
-        return None, traceback.format_exc()
-
 render_anlik_risk_haritasi, err_map = _safe_import(
     "pages.Anlik_Risk_Haritasi", "render_anlik_risk_haritasi"
 )
 
-# İstersen diğer sayfaları da modüler bağlarız (şimdilik placeholder)
-# render_suc_zarar_tahmini, err_fc = _safe_import("pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini")
-# render_devriye_planlama, err_pt = _safe_import("pages.Devriye_Planlama", "render_devriye_planlama")
-# render_raporlar_oneriler, err_rp = _safe_import("pages.Raporlar_Oneriler", "render_raporlar_oneriler")
-
 # ---------------------------
-# 5) Simple internal navigation (no page_link)
-#    - URL query param: ?p=home/map/forecast/patrol/reports
+# 7) Simple internal navigation (no page_link)
 # ---------------------------
 PAGES = {
     "home": "🏠 Ana Sayfa",
@@ -185,12 +182,11 @@ def set_page(p: str):
     st.rerun()
 
 # ---------------------------
-# 6) Sidebar (ONLY 5 items + live clock)
+# 8) Sidebar (ONLY 5 items + live clock)
 # ---------------------------
 def render_corporate_sidebar(active_key: str):
     st.sidebar.markdown("## Kurumsal Menü")
 
-    # SF time (kolluk dili)
     try:
         sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
         st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
@@ -211,7 +207,7 @@ current_page = get_current_page()
 render_corporate_sidebar(current_page)
 
 # ---------------------------
-# 7) Page renderers (Home is FAST)
+# 9) Page renderers
 # ---------------------------
 def render_home():
     st.markdown("# SUTAM — Operasyon Paneli")
@@ -295,15 +291,12 @@ def render_home():
         unsafe_allow_html=True,
     )
 
-    st.write("")
-    st.divider()
-
 def render_placeholder(title: str):
     st.markdown(f"# {title}")
     st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
 
 # ---------------------------
-# 8) Router
+# 10) Router
 # ---------------------------
 if current_page == "home":
     render_home()
