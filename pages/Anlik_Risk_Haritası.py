@@ -1,4 +1,4 @@
-# pages/page_anlik_risk_haritasi.py
+# pages/anlik_risk_haritasi.py
 # SUTAM — Anlık Risk Haritası (Kolluk için sade • seçim yok • 5’li Likert)
 # - app.py router tarafından çağrılır: render_anlik_risk_haritasi()
 
