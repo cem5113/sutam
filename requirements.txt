@@ -1,6 +1,19 @@
-streamlit
-pandas
-numpy
-pyarrow
-pydeck
 streamlit-autorefresh
+
+# --- Core packages ---
+pandas==2.2.3
+numpy==1.26.4
+scikit-learn==1.5.2
+xgboost==2.1.1
+lightgbm==4.5.0
+joblib==1.4.2
+
+# --- Visualization & UI ---
+streamlit==1.38.0
+pydeck==0.9.1
+folium==0.17.0
+streamlit-folium==0.20.0
+
+# --- I/O & utilities ---
+pyarrow==17.0.0
+requests==2.32.3
