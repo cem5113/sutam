@@ -1,9 +1,16 @@
 # app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
+# ✅ Bu sürüm: senin mevcut dosya adlarınla uyumlu
+# pages/
+#   Anlik_Risk_Haritasi.py
+#   Suc_Zarar_Tahmini.py
+#   Devriye_Planlama.py
+#   Raporlar_Oneriler.py
 
 from __future__ import annotations
 
 import os
 import json
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -126,12 +133,28 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Import page modules (NO emoji filename issues)
+# 4) Import page modules (LAZY + debug-friendly)
+#    ✅ Dosya adlarınla uyumlu: pages/Anlik_Risk_Haritasi.py vb.
+#    ✅ Hata olursa ekrana traceback basar (gizlemez)
 # ---------------------------
-try:
-    from pages.page_anlik_risk_haritasi import render_anlik_risk_haritasi
-except Exception:
-    render_anlik_risk_haritasi = None
+def _safe_import(module_path: str, func_name: str):
+    try:
+        mod = __import__(module_path, fromlist=[func_name])
+        fn = getattr(mod, func_name)
+        if not callable(fn):
+            raise TypeError(f"{module_path}.{func_name} callable değil.")
+        return fn, None
+    except Exception:
+        return None, traceback.format_exc()
+
+render_anlik_risk_haritasi, err_map = _safe_import(
+    "pages.Anlik_Risk_Haritasi", "render_anlik_risk_haritasi"
+)
+
+# İstersen diğer sayfaları da modüler bağlarız (şimdilik placeholder)
+# render_suc_zarar_tahmini, err_fc = _safe_import("pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini")
+# render_devriye_planlama, err_pt = _safe_import("pages.Devriye_Planlama", "render_devriye_planlama")
+# render_raporlar_oneriler, err_rp = _safe_import("pages.Raporlar_Oneriler", "render_raporlar_oneriler")
 
 # ---------------------------
 # 5) Simple internal navigation (no page_link)
@@ -170,7 +193,6 @@ def render_corporate_sidebar(active_key: str):
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
-    # 5 navigation buttons
     for key, label in PAGES.items():
         if key == active_key:
             st.sidebar.button(label, use_container_width=True, disabled=True)
@@ -219,7 +241,7 @@ def render_home():
         st.markdown(
             """
             <div class="sutam-card">
-              <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
+              <div class="sutam-card-title">📊 Suç & Suç Zararı Tahmini</div>
               <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
             </div>
             """,
@@ -274,7 +296,7 @@ def render_placeholder(title: str):
     st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
 
 # ---------------------------
-# 8) Router (MAP placeholder kalktı, gerçek sayfa bağlandı)
+# 8) Router
 # ---------------------------
 if current_page == "home":
     render_home()
@@ -282,7 +304,10 @@ if current_page == "home":
 elif current_page == "map":
     if render_anlik_risk_haritasi is None:
         render_placeholder(PAGES["map"])
-        st.error("Harita modülü yüklenemedi. `pages/anlik_risk_haritasi.py` dosyasını kontrol edin.")
+        st.error("Harita modülü yüklenemedi. `pages/Anlik_Risk_Haritasi.py` dosyasını kontrol edin.")
+        if err_map:
+            st.caption("Import hatası (debug):")
+            st.code(err_map)
     else:
         render_anlik_risk_haritasi()
 
