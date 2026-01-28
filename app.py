@@ -1,9 +1,9 @@
-# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • page_link/switch_page yok)
+# app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
+
 from __future__ import annotations
 
 import os
 import json
-import runpy
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -20,13 +20,14 @@ st.set_page_config(
 )
 
 # ---------------------------
-# 1) Autorefresh (60s) — sadece saat için
+# 1) Optional autorefresh (60s)
 # ---------------------------
 def enable_autorefresh_60s():
     try:
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=60_000, key="sutam_clock_refresh")
     except Exception:
+        # paket yoksa sessiz geç
         pass
 
 enable_autorefresh_60s()
@@ -82,7 +83,7 @@ def apply_corporate_style():
 
           section[data-testid="stSidebar"] { border-right: 1px solid #e2e8f0; }
 
-          /* default Pages nav gizle (app + otomatik liste) */
+          /* ✅ Streamlit default Pages nav ("app" ve liste) gizle */
           [data-testid="stSidebarNav"] { display: none !important; }
           section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] { display: none !important; }
         </style>
@@ -125,7 +126,16 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Router (query param)
+# 4) Import page modules (NO emoji filename issues)
+# ---------------------------
+try:
+    from pages.page_anlik_risk_haritasi import render_anlik_risk_haritasi
+except Exception:
+    render_anlik_risk_haritasi = None
+
+# ---------------------------
+# 5) Simple internal navigation (no page_link)
+#    - URL query param: ?p=home/map/forecast/patrol/reports
 # ---------------------------
 PAGES = {
     "home": "🏠 Ana Sayfa",
@@ -135,23 +145,22 @@ PAGES = {
     "reports": "📄 Raporlar & Kolluğa Öneriler",
 }
 
-PAGE_FILES = {
-    "map": "pages/1_Anlik_Risk_Haritasi.py",
-    "forecast": "pages/2_Suc_Zarar_Tahmini.py",
-    "patrol": "pages/3_Devriye_Planlama.py",
-    "reports": "pages/4_Raporlar_Oneriler.py",
-}
-
 def get_current_page() -> str:
-    p = st.query_params.get("p", "home")
+    q = st.query_params
+    p = q.get("p", "home")
     return p if p in PAGES else "home"
 
 def set_page(p: str):
     st.query_params["p"] = p
     st.rerun()
 
+# ---------------------------
+# 6) Sidebar (ONLY 5 items + live clock)
+# ---------------------------
 def render_corporate_sidebar(active_key: str):
     st.sidebar.markdown("## Kurumsal Menü")
+
+    # SF time (kolluk dili)
     try:
         sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
         st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
@@ -161,6 +170,7 @@ def render_corporate_sidebar(active_key: str):
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
+    # 5 navigation buttons
     for key, label in PAGES.items():
         if key == active_key:
             st.sidebar.button(label, use_container_width=True, disabled=True)
@@ -168,15 +178,11 @@ def render_corporate_sidebar(active_key: str):
             if st.sidebar.button(label, use_container_width=True):
                 set_page(key)
 
-def run_page_file(path: str):
-    if not os.path.exists(path):
-        st.error(f"Sayfa dosyası bulunamadı: `{path}`")
-        return
-    # streamlit page registry’ye ihtiyaç yok: dosyayı direkt çalıştır
-    runpy.run_path(path, run_name="__main__")
+current_page = get_current_page()
+render_corporate_sidebar(current_page)
 
 # ---------------------------
-# 5) Home (FAST)
+# 7) Page renderers (Home is FAST)
 # ---------------------------
 def render_home():
     st.markdown("# SUTAM — Operasyon Paneli")
@@ -224,7 +230,7 @@ def render_home():
             """
             <div class="sutam-card">
               <div class="sutam-card-title">👮 Devriye Planlama</div>
-              <p class="sutam-card-text">Top-K kapasiteye göre öncelik önerir.</p>
+              <p class="sutam-card-text">Risk/zarar odaklı devriye önceliklendirmesi sunar.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -240,12 +246,6 @@ def render_home():
             unsafe_allow_html=True,
         )
 
-    # İstersen burada kurumsal bir görsel göster:
-    img = "assets/risk_map_preview.png"
-    if os.path.exists(img):
-        st.write("")
-        st.image(img, caption="Anlık Risk Haritası — Ön izleme", use_container_width=True)
-
     st.write("")
     st.divider()
 
@@ -256,23 +256,44 @@ def render_home():
           <ul style="margin: 0 0 0 1.15rem;">
             <li>Çıktılar <b>bağlayıcı değildir</b>; nihai karar her zaman <b>insan değerlendirmesine</b> aittir.</li>
             <li>Sistem <b>bireyleri hedeflemez</b>; yalnızca mekânsal-zamansal örüntüler üzerinden risk farkındalığı sağlar.</li>
-            <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; saha bilgisiyle birlikte yorumlanmalıdır.</li>
+            <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
           </ul>
           <div class="sutam-muted" style="margin-top: 8px;">
-            Not: Teknik ayrıntılar analist odaklı raporlamada sunulur.
+            Not: Teknik performans metrikleri ve model ayrıntıları analist odaklı raporlamada sunulur.
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-# ---------------------------
-# 6) Render
-# ---------------------------
-current_page = get_current_page()
-render_corporate_sidebar(current_page)
+    st.write("")
+    st.divider()
 
+def render_placeholder(title: str):
+    st.markdown(f"# {title}")
+    st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
+
+# ---------------------------
+# 8) Router (MAP placeholder kalktı, gerçek sayfa bağlandı)
+# ---------------------------
 if current_page == "home":
     render_home()
+
+elif current_page == "map":
+    if render_anlik_risk_haritasi is None:
+        render_placeholder(PAGES["map"])
+        st.error("Harita modülü yüklenemedi. `pages/page_anlik_risk_haritasi.py` dosyasını kontrol edin.")
+    else:
+        render_anlik_risk_haritasi()
+
+elif current_page == "forecast":
+    render_placeholder(PAGES["forecast"])
+
+elif current_page == "patrol":
+    render_placeholder(PAGES["patrol"])
+
+elif current_page == "reports":
+    render_placeholder(PAGES["reports"])
+
 else:
-    run_page_file(PAGE_FILES[current_page])
+    render_home()
