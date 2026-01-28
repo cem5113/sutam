@@ -1,4 +1,4 @@
-# pages/2_🔮_Suc_Zarar_Tahmini.py
+# pages/Suc_Zarar_Tahmini.py
 import os
 import streamlit as st
 import pandas as pd
