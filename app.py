@@ -1,9 +1,11 @@
 # app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
+
 from __future__ import annotations
 
 import os
 import json
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 import pandas as pd
@@ -25,6 +27,7 @@ def enable_autorefresh_60s():
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=60_000, key="sutam_clock_refresh")
     except Exception:
+        # paket yoksa sessiz geç
         pass
 
 enable_autorefresh_60s()
@@ -103,7 +106,7 @@ AUDIT_CAND = [
 def load_deploy_time_utc() -> str:
     for p in AUDIT_CAND:
         try:
-            if p.startswith("http://") or p.startswith("https://"):
+            if p.startswith(("http://", "https://")):
                 obj = pd.read_json(p, typ="series").to_dict()
             elif os.path.exists(p):
                 with open(p, "r", encoding="utf-8") as f:
@@ -123,7 +126,15 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Simple internal navigation (no page_link)
+# 4) Import page modules (NO emoji filename issues)
+# ---------------------------
+try:
+    from pages.page_anlik_risk_haritasi import render_anlik_risk_haritasi
+except Exception:
+    render_anlik_risk_haritasi = None
+
+# ---------------------------
+# 5) Simple internal navigation (no page_link)
 #    - URL query param: ?p=home/map/forecast/patrol/reports
 # ---------------------------
 PAGES = {
@@ -144,16 +155,22 @@ def set_page(p: str):
     st.rerun()
 
 # ---------------------------
-# 5) Sidebar (ONLY 5 items + live clock)
+# 6) Sidebar (ONLY 5 items + live clock)
 # ---------------------------
 def render_corporate_sidebar(active_key: str):
-    st.sidebar.markdown("## Menü")
-    st.sidebar.caption(f"🕒 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.sidebar.markdown("## Kurumsal Menü")
+
+    # SF time (kolluk dili)
+    try:
+        sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
+        st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
+    except Exception:
+        st.sidebar.caption(f"🕒 {datetime.now():%Y-%m-%d %H:%M:%S}")
+
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
-    # 5 navigation buttons (curated)
-    # active sayfayı göstermek için hafif bir vurgu (seçili butonu disable yapıyoruz)
+    # 5 navigation buttons
     for key, label in PAGES.items():
         if key == active_key:
             st.sidebar.button(label, use_container_width=True, disabled=True)
@@ -165,12 +182,12 @@ current_page = get_current_page()
 render_corporate_sidebar(current_page)
 
 # ---------------------------
-# 6) Page renderers (Home is FAST)
+# 7) Page renderers (Home is FAST)
 # ---------------------------
 def render_home():
-    st.markdown("# SUTAM — Suç Tahmin Modeli")
+    st.markdown("# SUTAM — Operasyon Paneli")
     st.markdown(
-        f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Zarar Etkisi, Risk Analizi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
+        f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Risk Analizi, Zarar Etkisi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
         unsafe_allow_html=True,
     )
 
@@ -213,7 +230,7 @@ def render_home():
             """
             <div class="sutam-card">
               <div class="sutam-card-title">👮 Devriye Planlama</div>
-              <p class="sutam-card-text">Risk/zarar odaklı devriye önerileri sunar.</p>
+              <p class="sutam-card-text">Risk/zarar odaklı devriye önceliklendirmesi sunar.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -242,7 +259,7 @@ def render_home():
             <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
           </ul>
           <div class="sutam-muted" style="margin-top: 8px;">
-            Not: Teknik performans metrikleri ve model ayrıntıları “Raporlar & Kolluğa Öneriler” bölümünde (analist odaklı) sunulur.
+            Not: Teknik performans metrikleri ve model ayrıntıları analist odaklı raporlamada sunulur.
           </div>
         </div>
         """,
@@ -256,16 +273,27 @@ def render_placeholder(title: str):
     st.markdown(f"# {title}")
     st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
 
-# Router
+# ---------------------------
+# 8) Router (MAP placeholder kalktı, gerçek sayfa bağlandı)
+# ---------------------------
 if current_page == "home":
     render_home()
+
 elif current_page == "map":
-    render_placeholder(PAGES["map"])
+    if render_anlik_risk_haritasi is None:
+        render_placeholder(PAGES["map"])
+        st.error("Harita modülü yüklenemedi. `pages/page_anlik_risk_haritasi.py` dosyasını kontrol edin.")
+    else:
+        render_anlik_risk_haritasi()
+
 elif current_page == "forecast":
     render_placeholder(PAGES["forecast"])
+
 elif current_page == "patrol":
     render_placeholder(PAGES["patrol"])
+
 elif current_page == "reports":
     render_placeholder(PAGES["reports"])
+
 else:
     render_home()
