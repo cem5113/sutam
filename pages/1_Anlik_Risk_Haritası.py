@@ -1,5 +1,6 @@
 # pages/page_anlik_risk_haritasi.py
 # SUTAM — Anlık Risk Haritası (Kolluk için sade • seçim yok • 5’li Likert)
+# - app.py router tarafından çağrılır: render_anlik_risk_haritasi()
 
 from __future__ import annotations
 
@@ -12,14 +13,63 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
-from src.io_data import load_parquet_or_csv, prepare_forecast
+from src.io_data import load_parquet_or_csv, prepare_forecast  # gp yok
 
-# ============================================================
-# Helpers (file-local)
-# ============================================================
+# ----------------------------
+# Settings / Paths
+# ----------------------------
+DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
+
+FC_CANDIDATES = [
+    f"{DATA_DIR}/forecast_7d.parquet",
+    f"{DATA_DIR}/full_fc.parquet",
+    "deploy/forecast_7d.parquet",
+    "deploy/full_fc.parquet",
+    "data/forecast_7d.parquet",
+    "data/full_fc.parquet",
+]
+
+GEOJSON_LOCAL = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
+TARGET_TZ = "America/Los_Angeles"
+
+LIKERT = {
+    1: ("Çok Düşük", [46, 204, 113]),
+    2: ("Düşük",     [88, 214, 141]),
+    3: ("Orta",      [241, 196, 15]),
+    4: ("Yüksek",    [230, 126, 34]),
+    5: ("Çok Yüksek",[192, 57, 43]),
+}
+DEFAULT_FILL = [220, 220, 220]
+
+
+def _is_url(p: str) -> bool:
+    return str(p).startswith(("http://", "https://"))
+
+def _first_existing(candidates: list[str]) -> str | None:
+    for p in candidates:
+        if _is_url(p):
+            return p
+        if os.path.exists(p):
+            return p
+    return None
+
 def _digits11(x) -> str:
     s = "".join(ch for ch in str(x) if ch.isdigit())
     return s.zfill(11) if s else ""
+
+def _safe_str(x) -> str:
+    return "" if x is None or (isinstance(x, float) and np.isnan(x)) else str(x)
+
+def _format_expected(x) -> str:
+    try:
+        v = float(x)
+        if v < 0:
+            v = 0.0
+        lo = int(np.floor(v))
+        hi = int(np.ceil(v))
+        return f"~{lo}" if lo == hi else f"~{lo}–{hi}"
+    except Exception:
+        return "—"
 
 def _parse_range(tok: str):
     if not isinstance(tok, str) or "-" not in tok:
@@ -39,36 +89,16 @@ def _hour_to_bucket(h: int, labels: list[str]) -> str | None:
         rg = _parse_range(lab)
         if rg:
             parsed.append((lab, rg[0], rg[1]))
+
     for lab, s, e in parsed:
         if s <= h < e:
             return lab
+
     for lab, s, e in parsed:
         if s > e and (h >= s or h < e):
             return lab
+
     return parsed[0][0] if parsed else None
-
-def _safe_str(x) -> str:
-    return "" if x is None or (isinstance(x, float) and np.isnan(x)) else str(x)
-
-def _format_expected(x) -> str:
-    try:
-        v = float(x)
-        if v < 0:
-            v = 0.0
-        lo = int(np.floor(v))
-        hi = int(np.ceil(v))
-        return f"~{lo}" if lo == hi else f"~{lo}–{hi}"
-    except Exception:
-        return "—"
-
-LIKERT = {
-    1: ("Çok Düşük", [46, 204, 113]),
-    2: ("Düşük",     [88, 214, 141]),
-    3: ("Orta",      [241, 196, 15]),
-    4: ("Yüksek",    [230, 126, 34]),
-    5: ("Çok Yüksek",[192, 57, 43]),
-}
-DEFAULT_FILL = [220, 220, 220]
 
 def _risk_to_likert(df_hr: pd.DataFrame) -> pd.Series:
     for c in ["risk_likert", "likert", "risk_level_5", "risk5"]:
@@ -82,7 +112,7 @@ def _risk_to_likert(df_hr: pd.DataFrame) -> pd.Series:
             "very_low": 1, "vlow": 1, "low": 2,
             "medium": 3, "mid": 3,
             "high": 4,
-            "critical": 5, "very_high": 5, "vhigh": 5,
+            "critical": 5, "very_high": 5, "vhigh": 5
         }
         out = s.map(mapping)
         if out.notna().any():
@@ -99,28 +129,16 @@ def _risk_to_likert(df_hr: pd.DataFrame) -> pd.Series:
     return pd.Series([3] * len(df_hr), index=df_hr.index)
 
 @st.cache_data(show_spinner=False)
-def _load_fc(FC_CANDIDATES: list[str]) -> pd.DataFrame:
-    # ilk mevcut parquet/csv
-    chosen = None
-    for p in FC_CANDIDATES:
-        if str(p).startswith(("http://", "https://")):
-            chosen = p
-            break
-        if os.path.exists(p):
-            chosen = p
-            break
-
-    if not chosen:
+def _load_fc() -> pd.DataFrame:
+    fc_path = _first_existing(FC_CANDIDATES)
+    if not fc_path:
         return pd.DataFrame()
 
     try:
-        if str(chosen).startswith(("http://", "https://")):
-            if chosen.lower().endswith(".parquet"):
-                fc = pd.read_parquet(chosen)
-            else:
-                fc = pd.read_csv(chosen)
+        if _is_url(fc_path):
+            fc = pd.read_parquet(fc_path) if fc_path.lower().endswith(".parquet") else pd.read_csv(fc_path)
         else:
-            fc = load_parquet_or_csv(chosen)
+            fc = load_parquet_or_csv(fc_path)
     except Exception:
         return pd.DataFrame()
 
@@ -132,9 +150,9 @@ def _load_fc(FC_CANDIDATES: list[str]) -> pd.DataFrame:
     return fc
 
 @st.cache_data(show_spinner=False)
-def _load_geojson(path: str) -> dict:
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
+def _load_geojson() -> dict:
+    if os.path.exists(GEOJSON_LOCAL):
+        with open(GEOJSON_LOCAL, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
@@ -226,7 +244,7 @@ def _draw_map(gj: dict):
             "<br/>• {top2_category}"
             "<br/>• {top3_category}"
         ),
-        "style": {"backgroundColor":"#111827","color":"white"},
+        "style": {"backgroundColor": "#111827", "color": "white"},
     }
 
     deck = pdk.Deck(
@@ -249,6 +267,7 @@ def _make_ops_suggestions(df_hr: pd.DataFrame, top_n: int = 15) -> dict:
     tmp["expected_count_num"] = pd.to_numeric(tmp["expected_count"], errors="coerce").fillna(0.0)
 
     top = tmp.sort_values(["risk_likert", "expected_count_num"], ascending=[False, False]).head(top_n)
+
     max_l = int(top["risk_likert"].max())
     max_label = LIKERT.get(max_l, ("Orta", DEFAULT_FILL))[0]
 
@@ -271,33 +290,21 @@ def _make_ops_suggestions(df_hr: pd.DataFrame, top_n: int = 15) -> dict:
     return {"title": f"Kolluk Önerisi (Bu saat dilimi • en yüksek risk: {max_label})", "bullets": bullets}
 
 
-# ============================================================
-# PUBLIC ENTRY
-# ============================================================
 def render_anlik_risk_haritasi():
-    DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
-    GEOJSON_LOCAL = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
-    TARGET_TZ = "America/Los_Angeles"
-
-    FC_CANDIDATES = [
-        f"{DATA_DIR}/forecast_7d.parquet",
-        f"{DATA_DIR}/full_fc.parquet",
-        "deploy/forecast_7d.parquet",
-        "deploy/full_fc.parquet",
-        "data/forecast_7d.parquet",
-        "data/full_fc.parquet",
-    ]
-
     st.markdown("# 🗺️ Anlık Risk Haritası")
     st.caption("Harita, San Francisco yerel saatine göre mevcut saat dilimindeki göreli risk seviyelerini 5’li ölçekle gösterir.")
 
-    fc = _load_fc(FC_CANDIDATES)
+    fc = _load_fc()
     if fc.empty:
-        st.error("Forecast verisi bulunamadı/boş. `forecast_7d.parquet` veya `full_fc.parquet` (deploy) kontrol edin.")
+        st.error(
+            "Forecast verisi bulunamadı/boş.\n\n"
+            "Beklenen dosyalardan en az biri gerekli:\n"
+            f"- {FC_CANDIDATES[0]}\n- {FC_CANDIDATES[1]}\n"
+        )
         return
 
     if "date" not in fc.columns or "hour_range" not in fc.columns:
-        st.error("Forecast içinde `date` ve/veya `hour_range` kolonu yok.")
+        st.error("Forecast içinde `date` ve/veya `hour_range` kolonu yok. `prepare_forecast` çıktısını kontrol edin.")
         return
 
     fc = fc.copy()
@@ -327,12 +334,11 @@ def render_anlik_risk_haritasi():
         st.warning("Bu tarih/saat dilimi için kayıt bulunamadı.")
         return
 
-    gj = _load_geojson(GEOJSON_LOCAL)
+    gj = _load_geojson()
     if not gj:
         st.error(f"GeoJSON bulunamadı: `{GEOJSON_LOCAL}` (polygonlar gerekli).")
         return
 
-    # Legend (sade)
     with st.expander("🎨 Risk Ölçeği (5’li)", expanded=False):
         cols = st.columns(5)
         for i, c in enumerate(cols, start=1):
