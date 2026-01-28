@@ -282,7 +282,7 @@ if current_page == "home":
 elif current_page == "map":
     if render_anlik_risk_haritasi is None:
         render_placeholder(PAGES["map"])
-        st.error("Harita modülü yüklenemedi. `pages/page_anlik_risk_haritasi.py` dosyasını kontrol edin.")
+        st.error("Harita modülü yüklenemedi. `pages/anlik_risk_haritasi.py` dosyasını kontrol edin.")
     else:
         render_anlik_risk_haritasi()
 
