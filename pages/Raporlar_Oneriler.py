@@ -1,4 +1,4 @@
-# pages/4_Raporlar_Oneriler.py
+# pages/Raporlar_Oneriler.py
 import os
 import streamlit as st
 import pandas as pd
