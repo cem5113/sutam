@@ -1,5 +1,4 @@
-# app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
-
+# app.py — SUTAM (FINAL • kurumsal sidebar • 60sn saat • hızlı açılış • switch_page)
 from __future__ import annotations
 
 import os
@@ -27,13 +26,12 @@ def enable_autorefresh_60s():
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=60_000, key="sutam_clock_refresh")
     except Exception:
-        # paket yoksa sessiz geç
         pass
 
 enable_autorefresh_60s()
 
 # ---------------------------
-# 2) Corporate CSS + default nav hide
+# 2) Corporate CSS + hide default Pages nav
 # ---------------------------
 def apply_corporate_style():
     st.markdown(
@@ -94,7 +92,7 @@ def apply_corporate_style():
 apply_corporate_style()
 
 # ---------------------------
-# 3) Lightweight "last update" badge
+# 3) Lightweight "last update" badge (FAST)
 # ---------------------------
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
 AUDIT_CAND = [
@@ -126,41 +124,12 @@ def _cached_deploy_time() -> str:
 DEPLOY_TIME = _cached_deploy_time()
 
 # ---------------------------
-# 4) Import page modules (NO emoji filename issues)
+# 4) Sidebar (ONLY 5 items + live SF clock)
+#    - Navigation uses st.switch_page (NO imports, NO query params)
 # ---------------------------
-try:
-    from pages.page_anlik_risk_haritasi import render_anlik_risk_haritasi
-except Exception:
-    render_anlik_risk_haritasi = None
-
-# ---------------------------
-# 5) Simple internal navigation (no page_link)
-#    - URL query param: ?p=home/map/forecast/patrol/reports
-# ---------------------------
-PAGES = {
-    "home": "🏠 Ana Sayfa",
-    "map": "🗺️ Anlık Risk Haritası",
-    "forecast": "📊 Suç & Suç Zararı Tahmini",
-    "patrol": "👮 Devriye Planlama",
-    "reports": "📄 Raporlar & Kolluğa Öneriler",
-}
-
-def get_current_page() -> str:
-    q = st.query_params
-    p = q.get("p", "home")
-    return p if p in PAGES else "home"
-
-def set_page(p: str):
-    st.query_params["p"] = p
-    st.rerun()
-
-# ---------------------------
-# 6) Sidebar (ONLY 5 items + live clock)
-# ---------------------------
-def render_corporate_sidebar(active_key: str):
+def render_corporate_sidebar():
     st.sidebar.markdown("## Kurumsal Menü")
 
-    # SF time (kolluk dili)
     try:
         sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
         st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
@@ -170,130 +139,104 @@ def render_corporate_sidebar(active_key: str):
     st.sidebar.caption(f"Son güncelleme: {DEPLOY_TIME}")
     st.sidebar.divider()
 
-    # 5 navigation buttons
-    for key, label in PAGES.items():
-        if key == active_key:
-            st.sidebar.button(label, use_container_width=True, disabled=True)
-        else:
-            if st.sidebar.button(label, use_container_width=True):
-                set_page(key)
+    # ✅ Pages paths: repo'daki gerçek dosyalar
+    if st.sidebar.button("🏠 Ana Sayfa", use_container_width=True):
+        st.switch_page("app.py")
 
-current_page = get_current_page()
-render_corporate_sidebar(current_page)
+    if st.sidebar.button("🗺️ Anlık Risk Haritası", use_container_width=True):
+        st.switch_page("pages/1_Anlik_Risk_Haritasi.py")
+
+    if st.sidebar.button("📊 Suç & Suç Zararı Tahmini", use_container_width=True):
+        st.switch_page("pages/2_Suc_Zarar_Tahmini.py")
+
+    if st.sidebar.button("👮 Devriye Planlama", use_container_width=True):
+        st.switch_page("pages/3_Devriye_Planlama.py")
+
+    if st.sidebar.button("📄 Raporlar & Kolluğa Öneriler", use_container_width=True):
+        st.switch_page("pages/4_Raporlar_Oneriler.py")
+
+render_corporate_sidebar()
 
 # ---------------------------
-# 7) Page renderers (Home is FAST)
+# 5) HOME (FAST: parquet okumaz)
 # ---------------------------
-def render_home():
-    st.markdown("# SUTAM — Operasyon Paneli")
-    st.markdown(
-        f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Risk Analizi, Zarar Etkisi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
-        unsafe_allow_html=True,
-    )
+st.markdown("# SUTAM — Operasyon Paneli")
+st.markdown(
+    f'<div class="sutam-caption">Zamansal–Mekânsal Suç Tahmini: Risk Analizi, Zarar Etkisi ve Devriye Önerisi • Son güncelleme: <b>{DEPLOY_TIME}</b></div>',
+    unsafe_allow_html=True,
+)
 
-    st.write("")
+st.write("")
+st.markdown(
+    """
+    <div class="sutam-callout">
+      <b>Bu uygulama ne yapar?</b><br/>
+      Geçmiş suç olayları ve bağlamsal göstergelerden yararlanarak şehir genelinde <b>göreli risk düzeylerini</b> üretir ve
+      devriye planlama süreçlerine <b>karar destek</b> sağlar.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.write("")
+c1, c2, c3, c4 = st.columns(4, gap="medium")
+with c1:
     st.markdown(
         """
-        <div class="sutam-callout">
-          <b>Bu uygulama ne yapar?</b><br/>
-          Geçmiş suç olayları ve bağlamsal göstergelerden yararlanarak şehir genelinde <b>göreli risk düzeylerini</b> üretir ve
-          devriye planlama süreçlerine <b>karar destek</b> sağlar.
+        <div class="sutam-card">
+          <div class="sutam-card-title">🗺️ Anlık Risk Haritası</div>
+          <p class="sutam-card-text">5’li risk seviyesi ile sıcak bölgeleri hızlıca görselleştirir.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with c2:
+    st.markdown(
+        """
+        <div class="sutam-card">
+          <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
+          <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with c3:
+    st.markdown(
+        """
+        <div class="sutam-card">
+          <div class="sutam-card-title">👮 Devriye Planlama</div>
+          <p class="sutam-card-text">Risk/zarar odaklı devriye önceliklendirmesi sunar.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with c4:
+    st.markdown(
+        """
+        <div class="sutam-card">
+          <div class="sutam-card-title">📄 Raporlar & Öneriler</div>
+          <p class="sutam-card-text">Özet çıktı ve saha önerilerini indirilebilir sunar.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.write("")
-    c1, c2, c3, c4 = st.columns(4, gap="medium")
-    with c1:
-        st.markdown(
-            """
-            <div class="sutam-card">
-              <div class="sutam-card-title">🗺️ Anlık Risk Haritası</div>
-              <p class="sutam-card-text">5’li risk seviyesi ile sıcak bölgeleri hızlıca görselleştirir.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c2:
-        st.markdown(
-            """
-            <div class="sutam-card">
-              <div class="sutam-card-title">📊 Suç & Suç Zarar Tahmini</div>
-              <p class="sutam-card-text">Olasılık ve beklenen etkiyi birlikte değerlendirir.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c3:
-        st.markdown(
-            """
-            <div class="sutam-card">
-              <div class="sutam-card-title">👮 Devriye Planlama</div>
-              <p class="sutam-card-text">Risk/zarar odaklı devriye önceliklendirmesi sunar.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with c4:
-        st.markdown(
-            """
-            <div class="sutam-card">
-              <div class="sutam-card-title">📄 Raporlar & Öneriler</div>
-              <p class="sutam-card-text">Özet çıktı ve saha önerilerini indirilebilir sunar.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+st.write("")
+st.divider()
 
-    st.write("")
-    st.divider()
-
-    st.subheader("⚖️ Etik ve Sorumlu Kullanım Notları")
-    st.markdown(
-        """
-        <div class="sutam-ethics">
-          <ul style="margin: 0 0 0 1.15rem;">
-            <li>Çıktılar <b>bağlayıcı değildir</b>; nihai karar her zaman <b>insan değerlendirmesine</b> aittir.</li>
-            <li>Sistem <b>bireyleri hedeflemez</b>; yalnızca mekânsal-zamansal örüntüler üzerinden risk farkındalığı sağlar.</li>
-            <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
-          </ul>
-          <div class="sutam-muted" style="margin-top: 8px;">
-            Not: Teknik performans metrikleri ve model ayrıntıları analist odaklı raporlamada sunulur.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-    st.divider()
-
-def render_placeholder(title: str):
-    st.markdown(f"# {title}")
-    st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
-
-# ---------------------------
-# 8) Router (MAP placeholder kalktı, gerçek sayfa bağlandı)
-# ---------------------------
-if current_page == "home":
-    render_home()
-
-elif current_page == "map":
-    if render_anlik_risk_haritasi is None:
-        render_placeholder(PAGES["map"])
-        st.error("Harita modülü yüklenemedi. `pages/page_anlik_risk_haritasi.py` dosyasını kontrol edin.")
-    else:
-        render_anlik_risk_haritasi()
-
-elif current_page == "forecast":
-    render_placeholder(PAGES["forecast"])
-
-elif current_page == "patrol":
-    render_placeholder(PAGES["patrol"])
-
-elif current_page == "reports":
-    render_placeholder(PAGES["reports"])
-
-else:
-    render_home()
+st.subheader("⚖️ Etik ve Sorumlu Kullanım Notları")
+st.markdown(
+    """
+    <div class="sutam-ethics">
+      <ul style="margin: 0 0 0 1.15rem;">
+        <li>Çıktılar <b>bağlayıcı değildir</b>; nihai karar her zaman <b>insan değerlendirmesine</b> aittir.</li>
+        <li>Sistem <b>bireyleri hedeflemez</b>; yalnızca mekânsal-zamansal örüntüler üzerinden risk farkındalığı sağlar.</li>
+        <li>Risk seviyeleri <b>olasılıksal</b> göstergelerdir; yerel koşullar ve saha bilgisiyle birlikte yorumlanmalıdır.</li>
+      </ul>
+      <div class="sutam-muted" style="margin-top: 8px;">
+        Not: Teknik performans metrikleri ve model ayrıntıları analist odaklı raporlamada sunulur.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
