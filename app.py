@@ -17,6 +17,13 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 import pandas as pd
 
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # ---------------------------
 # 0) Page config (FIRST)
 # ---------------------------
