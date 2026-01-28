@@ -16,7 +16,8 @@ import traceback
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
+from importlib.util import spec_from_file_location, module_from_spec
+from pathlib import Path
 import streamlit as st
 import pandas as pd
 
@@ -30,15 +31,27 @@ if str(ROOT) not in sys.path:
 # ---------------------------
 # 1) Safe importer (debug-friendly)
 # ---------------------------
-def _safe_import(module_path: str, func_name: str):
+def import_from_path(py_file: str, func_name: str):
     try:
-        mod = __import__(module_path, fromlist=[func_name])
+        p = Path(__file__).resolve().parent / py_file
+        if not p.exists():
+            raise FileNotFoundError(f"Dosya yok: {p}")
+
+        spec = spec_from_file_location(p.stem, str(p))
+        mod = module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(mod)
+
         fn = getattr(mod, func_name)
         if not callable(fn):
-            raise TypeError(f"{module_path}.{func_name} callable değil.")
+            raise TypeError(f"{func_name} callable değil.")
         return fn, None
     except Exception:
         return None, traceback.format_exc()
+
+render_anlik_risk_haritasi, err_map = import_from_path(
+    "pages/Anlik_Risk_Haritasi.py", "render_anlik_risk_haritasi"
+)
 
 # ---------------------------
 # 2) Page config (FIRST Streamlit command)
