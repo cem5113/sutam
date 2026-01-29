@@ -4,20 +4,31 @@
 # - GeoJSON: data/sf_cells.geojson
 # - Hover: beklenen suç sayısı, suç olasılığı, en olası 3 suç
 # - Alt panel: bu saat dilimi için genel kolluk önerisi (Top-N hücre üzerinden)
-# - NOT: st.set_page_config burada yok (app.py zaten set ediyor). İstersen ekleyebilirsin.
+# - NOT: st.set_page_config burada yok (app.py zaten set ediyor)
 
 from __future__ import annotations
 
-import os, json
+import os
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
-from src.io_data import load_parquet_or_csv, prepare_forecast  # gp YOK (hız)
+# --- Güvenli import (src modülleri yoksa sayfa tamamen çökmesin) ---
+try:
+    from src.io_data import load_parquet_or_csv, prepare_forecast  # gp yok (hız)
+except Exception as e:
+    load_parquet_or_csv = None
+    prepare_forecast = None
+    _IMPORT_SRC_ERR = e
+else:
+    _IMPORT_SRC_ERR = None
+
 
 # =============================================================================
 # PATHS
@@ -32,7 +43,7 @@ FC_CANDIDATES = [
 GEOJSON_PATH = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
 TARGET_TZ = "America/Los_Angeles"
 
-# 5'li Likert + renk (kurumsal sade)
+# 5'li Likert + renk
 LIKERT = {
     1: ("Çok Düşük",  [46, 204, 113]),
     2: ("Düşük",      [88, 214, 141]),
@@ -41,6 +52,7 @@ LIKERT = {
     5: ("Çok Yüksek", [192, 57, 43]),
 }
 DEFAULT_FILL = [220, 220, 220]
+
 
 # =============================================================================
 # HELPERS
@@ -66,7 +78,6 @@ def _fmt3(x) -> str:
     return "—" if not np.isfinite(v) else f"{v:.3f}"
 
 def _fmt_expected(x) -> str:
-    # kolluk dili: ~0–1, ~1–2
     v = _safe_float(x, np.nan)
     if not np.isfinite(v):
         return "—"
@@ -99,7 +110,7 @@ def _hour_to_bucket(h: int, labels: list[str]) -> str | None:
         if s <= h < e:
             return lab
 
-    # wrap-around (rare) e.g. "21-3"
+    # wrap-around e.g. "21-3"
     for lab, s, e in parsed:
         if s > e and (h >= s or h < e):
             return lab
@@ -146,6 +157,7 @@ def _risk_to_likert(df_hr: pd.DataFrame) -> pd.Series:
 
     return pd.Series([3] * len(df_hr), index=df_hr.index)
 
+
 # =============================================================================
 # LOADERS (FAST)
 # =============================================================================
@@ -155,18 +167,21 @@ def load_forecast() -> pd.DataFrame:
     if not p:
         return pd.DataFrame()
 
+    if load_parquet_or_csv is None:
+        return pd.DataFrame()
+
     fc = load_parquet_or_csv(p)
-    if fc.empty:
-        return fc
+    if fc is None or getattr(fc, "empty", True):
+        return pd.DataFrame()
 
     # prepare_forecast gp=None ile destekliyorsa hız için öyle
-    try:
-        fc = prepare_forecast(fc, gp=None)
-    except TypeError:
-        # prepare_forecast mutlaka gp istiyorsa dokunma
-        pass
-    except Exception:
-        pass
+    if prepare_forecast is not None:
+        try:
+            fc = prepare_forecast(fc, gp=None)
+        except TypeError:
+            pass
+        except Exception:
+            pass
 
     return fc
 
@@ -266,17 +281,18 @@ def draw_map(gj: dict):
         opacity=0.65,
     )
 
+    # ✅ Pydeck tooltip: feature properties'lere properties.<field> ile eriş
     tooltip = {
         "html": (
-            "<b>GEOID:</b> {display_id}"
-            "<br/><b>Risk Seviyesi:</b> {likert_label}"
-            "<br/><b>Suç olasılığı (p):</b> {p_event_txt}"
-            "<br/><b>Beklenen suç sayısı:</b> {expected_txt}"
+            "<b>GEOID:</b> {properties.display_id}"
+            "<br/><b>Risk Seviyesi:</b> {properties.likert_label}"
+            "<br/><b>Suç olasılığı (p):</b> {properties.p_event_txt}"
+            "<br/><b>Beklenen suç sayısı:</b> {properties.expected_txt}"
             "<hr style='opacity:0.30'/>"
             "<b>En olası 3 suç:</b>"
-            "<br/>• {top1_category}"
-            "<br/>• {top2_category}"
-            "<br/>• {top3_category}"
+            "<br/>• {properties.top1_category}"
+            "<br/>• {properties.top2_category}"
+            "<br/>• {properties.top3_category}"
         ),
         "style": {"backgroundColor": "#111827", "color": "white"},
     }
@@ -323,80 +339,86 @@ def make_ops_suggestions(df_hr: pd.DataFrame, top_n: int = 20) -> dict:
     bullets.append("Not: Çıktılar bağlayıcı değildir; saha bilgisi ve amir değerlendirmesi ile birlikte yorumlanmalıdır.")
     return {"title": f"Kolluk Önerisi (Bu saat dilimi • en yüksek risk: {max_label})", "bullets": bullets}
 
+
 # =============================================================================
-# UI
+# PUBLIC ENTRYPOINT (app.py bunu import edip çağıracak)
 # =============================================================================
-st.markdown("# 🗺️ Anlık Risk Haritası")
-st.caption("San Francisco yerel saatine göre mevcut saat dilimindeki risk düzeylerini 5’li ölçekte gösterir (seçim yok).")
+def render_anlik_risk_haritasi():
+    st.markdown("# 🗺️ Anlık Risk Haritası")
+    st.caption("San Francisco yerel saatine göre mevcut saat dilimindeki risk düzeylerini 5’li ölçekte gösterir (seçim yok).")
 
-fc = load_forecast()
-if fc.empty:
-    st.error(
-        "Forecast verisi bulunamadı/boş.\n\n"
-        "Beklenen dosyalardan en az biri gerekli:\n"
-        f"- {FC_CANDIDATES[0]}\n- {FC_CANDIDATES[1]}\n"
-    )
-    st.stop()
+    # src import sorunu varsa net mesaj ver
+    if _IMPORT_SRC_ERR is not None:
+        st.error("`src.io_data` modülü import edilemedi. `src/` klasörünü ve dosya yollarını kontrol edin.")
+        st.code(repr(_IMPORT_SRC_ERR))
+        return
 
-# zorunlu alanlar
-date_col = _pick_col(fc, ["date"])
-hr_col   = _pick_col(fc, ["hour_range", "hour_bucket"])
-if not date_col or not hr_col:
-    st.error("Forecast içinde `date` ve/veya `hour_range` kolonu yok. `prepare_forecast` çıktısını kontrol edin.")
-    st.stop()
-
-fc = fc.copy()
-fc[date_col] = pd.to_datetime(fc[date_col], errors="coerce")
-fc["date_norm"] = fc[date_col].dt.normalize()
-
-now_sf = datetime.now(ZoneInfo(TARGET_TZ))
-today = pd.Timestamp(now_sf.date())
-
-dates = sorted(fc["date_norm"].dropna().unique())
-if not dates:
-    st.error("Forecast içinde geçerli tarih bulunamadı.")
-    st.stop()
-
-sel_date = today if today in dates else max([d for d in dates if d <= today], default=dates[0])
-
-labels = sorted(fc[hr_col].dropna().astype(str).unique().tolist())
-hr_label = _hour_to_bucket(now_sf.hour, labels) or (labels[0] if labels else None)
-if not hr_label:
-    st.error("Forecast içinde saat dilimi bulunamadı.")
-    st.stop()
-
-st.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}**  •  Tarih: **{pd.Timestamp(sel_date).date()}**  •  Dilim: **{hr_label}**")
-
-df_hr = fc[(fc["date_norm"] == sel_date) & (fc[hr_col].astype(str) == str(hr_label))].copy()
-if df_hr.empty:
-    st.warning("Bu tarih/saat dilimi için kayıt bulunamadı.")
-    st.stop()
-
-gj = load_geojson()
-if not gj:
-    st.error(f"GeoJSON bulunamadı: `{GEOJSON_PATH}` (polygonlar gerekli).")
-    st.stop()
-
-# (opsiyonel) legend
-with st.expander("🎨 Risk Ölçeği (5’li)", expanded=False):
-    cols = st.columns(5)
-    for i, c in enumerate(cols, start=1):
-        label, rgb = LIKERT[i]
-        c.markdown(
-            f"""
-            <div style="display:flex; align-items:center; gap:10px;">
-              <div style="width:16px;height:16px;border-radius:4px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>
-              <div style="font-size:14px;"><b>{i}</b> — {label}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    fc = load_forecast()
+    if fc.empty:
+        st.error(
+            "Forecast verisi bulunamadı/boş.\n\n"
+            "Beklenen dosyalardan en az biri gerekli:\n"
+            + "\n".join([f"- {p}" for p in FC_CANDIDATES[:2]])
         )
+        return
 
-gj_enriched = enrich_geojson(gj, df_hr)
-draw_map(gj_enriched)
+    date_col = _pick_col(fc, ["date"])
+    hr_col   = _pick_col(fc, ["hour_range", "hour_bucket"])
+    if not date_col or not hr_col:
+        st.error("Forecast içinde `date` ve/veya `hour_range` kolonu yok. `prepare_forecast` çıktısını kontrol edin.")
+        return
 
-st.divider()
-ops = make_ops_suggestions(df_hr, top_n=20)
-st.subheader("👮 " + ops["title"])
-for b in ops["bullets"]:
-    st.write("•", b)
+    fc = fc.copy()
+    fc[date_col] = pd.to_datetime(fc[date_col], errors="coerce")
+    fc["date_norm"] = fc[date_col].dt.normalize()
+
+    now_sf = datetime.now(ZoneInfo(TARGET_TZ))
+    today = pd.Timestamp(now_sf.date())
+
+    dates = sorted(fc["date_norm"].dropna().unique())
+    if not dates:
+        st.error("Forecast içinde geçerli tarih bulunamadı.")
+        return
+
+    sel_date = today if today in dates else max([d for d in dates if d <= today], default=dates[0])
+
+    labels = sorted(fc[hr_col].dropna().astype(str).unique().tolist())
+    hr_label = _hour_to_bucket(now_sf.hour, labels) or (labels[0] if labels else None)
+    if not hr_label:
+        st.error("Forecast içinde saat dilimi bulunamadı.")
+        return
+
+    st.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}**  •  Tarih: **{pd.Timestamp(sel_date).date()}**  •  Dilim: **{hr_label}**")
+
+    df_hr = fc[(fc["date_norm"] == sel_date) & (fc[hr_col].astype(str) == str(hr_label))].copy()
+    if df_hr.empty:
+        st.warning("Bu tarih/saat dilimi için kayıt bulunamadı.")
+        return
+
+    gj = load_geojson()
+    if not gj:
+        st.error(f"GeoJSON bulunamadı: `{GEOJSON_PATH}` (polygonlar gerekli).")
+        return
+
+    with st.expander("🎨 Risk Ölçeği (5’li)", expanded=False):
+        cols = st.columns(5)
+        for i, c in enumerate(cols, start=1):
+            label, rgb = LIKERT[i]
+            c.markdown(
+                f"""
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <div style="width:16px;height:16px;border-radius:4px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>
+                  <div style="font-size:14px;"><b>{i}</b> — {label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    gj_enriched = enrich_geojson(gj, df_hr)
+    draw_map(gj_enriched)
+
+    st.divider()
+    ops = make_ops_suggestions(df_hr, top_n=20)
+    st.subheader("👮 " + ops["title"])
+    for b in ops["bullets"]:
+        st.write("•", b)
