@@ -225,7 +225,7 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
     df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[0])
     df["fill_color"]   = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[1])
 
-    dmap = df.set_index("geoid11")
+    dmap = df.groupby("geoid11", as_index=True).first()
 
     feats_out = []
     for feat in gj.get("features", []):
@@ -255,14 +255,19 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
         props["fill_color"] = DEFAULT_FILL
 
         if key and key in dmap.index:
-            row = dmap.loc[key]
-            props["likert_label"] = str(row.get("likert_label", ""))
-            props["expected_txt"] = str(row.get("expected_txt", "—"))
-            props["p_event_txt"]  = str(row.get("p_event_txt", "—"))
+            row = dmap.loc[key]  # artık her zaman Series (tekil)
+        
+            props["likert_label"] = str(row.get("likert_label", "") or "")
+            props["expected_txt"] = str(row.get("expected_txt", "—") or "—")
+            props["p_event_txt"]  = str(row.get("p_event_txt", "—") or "—")
+        
+            # "or" Series patlatmasın diye tekilleştirdik; yine de güvenli yazalım
             props["top1_category"] = str(row.get("top1_category", "") or "")
             props["top2_category"] = str(row.get("top2_category", "") or "")
             props["top3_category"] = str(row.get("top3_category", "") or "")
-            props["fill_color"] = row.get("fill_color", DEFAULT_FILL)
+        
+            fc = row.get("fill_color", DEFAULT_FILL)
+            props["fill_color"] = fc if isinstance(fc, (list, tuple)) else DEFAULT_FILL
 
         feats_out.append({**feat, "properties": props})
 
