@@ -198,41 +198,66 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
 
     df = df_hr.copy()
 
-    # GEOID
-    geoid_col = _pick_col(df, ["GEOID", "geoid"])
-    if not geoid_col:
-        df["geoid11"] = ""
+    # GEOID normalize
+    if "GEOID" in df.columns:
+        df["geoid"] = df["GEOID"].map(digits11)
+    elif "geoid" in df.columns:
+        df["geoid"] = df["geoid"].map(digits11)
     else:
-        df["geoid11"] = df[geoid_col].map(_digits11)
+        df["geoid"] = ""
 
-    # expected_count / p_event
-    exp_col = _pick_col(df, ["expected_count", "exp_count", "lambda", "mu"])
-    pe_col  = _pick_col(df, ["p_event", "prob_event", "crime_prob", "risk_prob"])
+    # --- Tooltip alanları (p_event / expected / top1-3) ---
+    # p_event varsa, yoksa top1_prob'u p_event gibi göster (en azından boş kalmasın)
+    if "p_event" not in df.columns:
+        df["p_event"] = pd.to_numeric(df.get("top1_prob", np.nan), errors="coerce")
+    df["p_event_txt"] = pd.to_numeric(df["p_event"], errors="coerce").map(lambda x: f"{x:.3f}" if pd.notna(x) else "—")
 
-    df["expected_txt"] = df[exp_col].map(_fmt_expected) if exp_col else "—"
-    df["p_event_txt"]  = df[pe_col].map(_fmt3) if pe_col else "—"
+    if "expected_count" not in df.columns:
+        df["expected_count"] = np.nan
+    df["expected_txt"] = pd.to_numeric(df["expected_count"], errors="coerce").map(lambda x: f"{x:.2f}" if pd.notna(x) else "—")
 
-    # top categories
-    top1 = _pick_col(df, ["top1_category", "top1_cat", "cat1"])
-    top2 = _pick_col(df, ["top2_category", "top2_cat", "cat2"])
-    top3 = _pick_col(df, ["top3_category", "top3_cat", "cat3"])
-    df["top1_category"] = df[top1].astype(str) if top1 else ""
-    df["top2_category"] = df[top2].astype(str) if top2 else ""
-    df["top3_category"] = df[top3].astype(str) if top3 else ""
+    for i in (1, 2, 3):
+        c = f"top{i}_category"
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).replace("nan", "").fillna("")
 
-    # likert + color
-    df["risk_likert"] = _risk_to_likert(df)
-    df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[0])
-    df["fill_color"]   = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[1])
+    # Risk -> 5'li Likert (eğer sende risk_likert yoksa kendi fonksiyonunla üret)
+    df["risk_likert"] = _risk_to_likert(df) if "_risk_to_likert" in globals() else 3
 
-    dmap = df.groupby("geoid11", as_index=True).first()
+    # Likert label + renk (senin LIKERT dict'in varsa onu kullan)
+    def _likert_label(k):
+        try:
+            return LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[0]
+        except Exception:
+            return "Orta"
+
+    def _likert_color(k):
+        try:
+            return LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[1]
+        except Exception:
+            return DEFAULT_FILL
+
+    df["likert_label"] = df["risk_likert"].map(_likert_label)
+    df["fill_color"] = df["risk_likert"].map(_likert_color)
+
+    # ✅ Kritik: aynı GEOID birden fazla satırsa tekilleştir (yoksa row DataFrame döner)
+    # (Öncelik: risk_likert yüksek + expected_count yüksek)
+    df["_expected_num"] = pd.to_numeric(df["expected_count"], errors="coerce").fillna(0.0)
+    df = (
+        df.sort_values(["risk_likert", "_expected_num"], ascending=[False, False])
+          .drop_duplicates("geoid", keep="first")
+    )
+
+    dmap = df.set_index("geoid")
 
     feats_out = []
     for feat in gj.get("features", []):
         props = dict(feat.get("properties") or {})
 
+        # GEOID adayları
         raw = None
-        for k in ("geoid", "GEOID", "cell_id", "id", "geoid11", "geoid_11"):
+        for k in ("geoid","GEOID","cell_id","id","geoid11","geoid_11","display_id"):
             if k in props:
                 raw = props[k]
                 break
@@ -242,62 +267,57 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
                     raw = v
                     break
 
-        key = _digits11(raw)
+        key = digits11(raw)
         props["display_id"] = str(raw) if raw not in (None, "") else key
 
-        # defaults
+        # defaults (tooltip alanları)
         props["likert_label"] = ""
+        props["p_event_txt"] = "—"
         props["expected_txt"] = "—"
-        props["p_event_txt"]  = "—"
         props["top1_category"] = ""
         props["top2_category"] = ""
         props["top3_category"] = ""
         props["fill_color"] = DEFAULT_FILL
 
         if key and key in dmap.index:
-            row = dmap.loc[key]  # artık her zaman Series (tekil)
-        
+            row = dmap.loc[key]  # artık Series garanti
             props["likert_label"] = str(row.get("likert_label", "") or "")
-            props["expected_txt"] = str(row.get("expected_txt", "—") or "—")
             props["p_event_txt"]  = str(row.get("p_event_txt", "—") or "—")
-        
-            # "or" Series patlatmasın diye tekilleştirdik; yine de güvenli yazalım
+            props["expected_txt"] = str(row.get("expected_txt", "—") or "—")
             props["top1_category"] = str(row.get("top1_category", "") or "")
             props["top2_category"] = str(row.get("top2_category", "") or "")
             props["top3_category"] = str(row.get("top3_category", "") or "")
-        
-            fc = row.get("fill_color", DEFAULT_FILL)
-            props["fill_color"] = fc if isinstance(fc, (list, tuple)) else DEFAULT_FILL
+            props["fill_color"] = row.get("fill_color", DEFAULT_FILL)
 
         feats_out.append({**feat, "properties": props})
 
     return {**gj, "features": feats_out}
-
+    
 def draw_map(gj: dict):
     layer = pdk.Layer(
         "GeoJsonLayer",
         gj,
         stroked=True,
         get_line_color=[80, 80, 80],
-        line_width_min_pixels=0.6,
+        line_width_min_pixels=0.5,
         filled=True,
         get_fill_color="properties.fill_color",
         pickable=True,
         opacity=0.65,
     )
 
-    # ✅ Pydeck tooltip: feature properties'lere properties.<field> ile eriş
+    # ✅ ÖNEMLİ: {properties.xxx} DEĞİL — {xxx} KULLAN
     tooltip = {
         "html": (
-            "<b>GEOID:</b> {properties.display_id}"
-            "<br/><b>Risk Seviyesi:</b> {properties.likert_label}"
-            "<br/><b>Suç olasılığı (p):</b> {properties.p_event_txt}"
-            "<br/><b>Beklenen suç sayısı:</b> {properties.expected_txt}"
-            "<hr style='opacity:0.30'/>"
+            "<b>GEOID:</b> {display_id}"
+            "<br/><b>Risk Seviyesi:</b> {likert_label}"
+            "<br/><b>Suç olasılığı (p):</b> {p_event_txt}"
+            "<br/><b>Beklenen suç sayısı:</b> {expected_txt}"
+            "<hr style='opacity:0.25'/>"
             "<b>En olası 3 suç:</b>"
-            "<br/>• {properties.top1_category}"
-            "<br/>• {properties.top2_category}"
-            "<br/>• {properties.top3_category}"
+            "<br/>• {top1_category}"
+            "<br/>• {top2_category}"
+            "<br/>• {top3_category}"
         ),
         "style": {"backgroundColor": "#111827", "color": "white"},
     }
