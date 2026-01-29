@@ -1,13 +1,13 @@
 # pages/Anlik_Risk_Haritasi.py
-# SUTAM — Anlık Risk Haritası (ANLIK • seçim yok)
-# - Harita hover: GEOID / risk / p_event / expected / top1-3
-# - Ops panel: (1) Saat dilimi genel öneri (Top-N) + (2) GEOID seçilince hücreye özel öneri
-# - Legend: harita üstünde popover (dikey değil)
+# SUTAM — Anlık Risk Haritası (ANLIK • SF saatine göre hour_range)
+# - Likert (1-5): SEÇİLİ saat dilimindeki risk dağılımına göre (quantile / "çan eğrisi" mantığı)
+# - Tooltip: GEOID + Risk seviyesi + p_event + expected + top1-3 + mikro kolluk önerisi
+# - Seçili hücre analizi yok (kaldırıldı)
+# - Legend: %0-20 ... %80-100 (saat dilimi içi göreli)
 
 from __future__ import annotations
 
-import os
-import json
+import os, json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -26,10 +26,6 @@ except Exception as e:
 else:
     _IMPORT_SRC_ERR = None
 
-
-# =============================================================================
-# PATHS
-# =============================================================================
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
 FC_CANDIDATES = [
     f"{DATA_DIR}/forecast_7d.parquet",
@@ -41,10 +37,7 @@ FC_CANDIDATES = [
 GEOJSON_PATH = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
 TARGET_TZ = "America/Los_Angeles"
 
-
-# =============================================================================
-# LIKERT (soft, kurumsal)
-# =============================================================================
+# Renkler (kurumsal-yumuşak)
 LIKERT = {
     1: ("Çok Düşük",  [56, 189, 137]),
     2: ("Düşük",      [104, 207, 162]),
@@ -54,10 +47,7 @@ LIKERT = {
 }
 DEFAULT_FILL = [220, 220, 220]
 
-
-# =============================================================================
-# HELPERS
-# =============================================================================
+# --- helpers ---
 def _first_existing(paths: list[str]) -> str | None:
     for p in paths:
         if os.path.exists(p):
@@ -95,7 +85,6 @@ def _fmt_expected_band(x) -> str:
     return f"~{lo}" if lo == hi else f"~{lo}–{hi}"
 
 def _parse_range(tok: str):
-    # "21-24" -> (21,24)
     if not isinstance(tok, str) or "-" not in tok:
         return None
     a, b = tok.split("-", 1)
@@ -113,77 +102,20 @@ def _hour_to_bucket(h: int, labels: list[str]) -> str | None:
         rg = _parse_range(str(lab))
         if rg:
             parsed.append((str(lab), rg[0], rg[1]))
-
     for lab, s, e in parsed:
         if s <= h < e:
             return lab
-
     for lab, s, e in parsed:
         if s > e and (h >= s or h < e):
             return lab
-
     return parsed[0][0] if parsed else None
 
-
-# =============================================================================
-# RISK -> 1..5 (önce risk_level/risk_bin varsa onu kullan)
-# =============================================================================
-def risk_to_likert(df: pd.DataFrame) -> pd.Series:
-    # 0) zaten 1-5 varsa
-    direct = _pick_col(df, ["risk_likert", "likert", "risk5", "risk_level_5"])
-    if direct:
-        s = pd.to_numeric(df[direct], errors="coerce").fillna(3).astype(int)
-        return s.clip(1, 5)
-
-    # 1) risk_bin varsa (bazı pipeline'larda 1..10 decile gibi olabilir)
-    rb = _pick_col(df, ["risk_bin", "risk_decile"])
-    if rb:
-        s = pd.to_numeric(df[rb], errors="coerce")
-        if s.notna().any():
-            # 1..10 -> 1..5
-            if s.max() > 5:
-                # 1-10'u 5'e sıkıştır
-                out = np.ceil(s / 2.0)
-                return pd.Series(out, index=df.index).fillna(3).astype(int).clip(1, 5)
-            return s.fillna(3).astype(int).clip(1, 5)
-
-    # 2) risk_level string varsa
-    rl = _pick_col(df, ["risk_level", "level"])
-    if rl:
-        s = df[rl].astype(str).str.lower()
-        mapping = {
-            "very_low": 1, "vlow": 1, "low": 2,
-            "medium": 3, "mid": 3,
-            "high": 4,
-            "critical": 5, "very_high": 5, "vhigh": 5
-        }
-        out = s.map(mapping)
-        if out.notna().any():
-            return out.fillna(3).astype(int).clip(1, 5)
-
-    # 3) risk_score / p_event ile qcut
-    rs = _pick_col(df, ["risk_score", "risk", "p_event", "risk_prob"])
-    if rs:
-        vals = pd.to_numeric(df[rs], errors="coerce")
-        if vals.notna().any():
-            try:
-                bins = pd.qcut(vals.rank(method="first"), 5, labels=[1, 2, 3, 4, 5])
-                return bins.astype(int)
-            except Exception:
-                pass
-
-    return pd.Series([3] * len(df), index=df.index)
-
-
-# =============================================================================
-# LOADERS
-# =============================================================================
+# --- loaders ---
 @st.cache_data(show_spinner=False)
 def load_forecast() -> pd.DataFrame:
     p = _first_existing(FC_CANDIDATES)
     if not p or load_parquet_or_csv is None:
         return pd.DataFrame()
-
     fc = load_parquet_or_csv(p)
     if fc is None or getattr(fc, "empty", True):
         return pd.DataFrame()
@@ -195,7 +127,6 @@ def load_forecast() -> pd.DataFrame:
             pass
         except Exception:
             pass
-
     return fc
 
 @st.cache_data(show_spinner=False)
@@ -205,55 +136,96 @@ def load_geojson() -> dict:
             return json.load(f)
     return {}
 
+# --- risk to likert (SADECE saat dilimi içinde quantile) ---
+def compute_relative_likert(df_hr: pd.DataFrame) -> tuple[pd.Series, str]:
+    """
+    Likert'i o saat dilimindeki dağılıma göre 5'e böler.
+    Öncelik: risk_score -> risk_prob -> p_event
+    """
+    col = _pick_col(df_hr, ["risk_score", "risk_prob", "p_event"])
+    if not col:
+        return pd.Series([3] * len(df_hr), index=df_hr.index), "risk_score/risk_prob/p_event yok"
 
-# =============================================================================
-# UI: legend popover (harita üstünde)
-# =============================================================================
-def render_legend_popover():
-    left, right = st.columns([1, 5], vertical_alignment="center")
-    with left:
-        with st.popover("🎨 Risk Ölçeği", use_container_width=True):
-            st.markdown("**5’li Risk Ölçeği**")
-            for i in range(1, 6):
-                label, rgb = LIKERT[i]
-                st.markdown(
-                    f"""
-                    <div style="display:flex; align-items:center; gap:10px; margin:6px 0;">
-                      <div style="width:14px;height:14px;border-radius:5px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>
-                      <div><b>{i}</b> — {label}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            st.caption("Not: Renkler karar destek amaçlıdır; saha bilgisiyle birlikte yorumlanmalıdır.")
-    with right:
-        st.caption("Harita üzerinde hücrelerin üstüne gelerek (hover) detayları görebilirsiniz.")
+    vals = pd.to_numeric(df_hr[col], errors="coerce")
+    if vals.notna().sum() < 10:
+        # çok az veri varsa sabit orta
+        return pd.Series([3] * len(df_hr), index=df_hr.index), f"{col} az veri"
 
+    # qcut aynı değerlerde hata verebilir -> rank ile stabilize
+    ranked = vals.rank(method="first")
+    try:
+        bins = pd.qcut(ranked, 5, labels=[1, 2, 3, 4, 5])
+        return bins.astype(int), f"quantile({col})"
+    except Exception:
+        # fallback: percentiles manual
+        q = np.nanpercentile(vals, [20, 40, 60, 80])
+        out = pd.Series(3, index=df_hr.index)
+        out[vals <= q[0]] = 1
+        out[(vals > q[0]) & (vals <= q[1])] = 2
+        out[(vals > q[1]) & (vals <= q[2])] = 3
+        out[(vals > q[2]) & (vals <= q[3])] = 4
+        out[vals > q[3]] = 5
+        return out.astype(int), f"percentile({col})"
 
-# =============================================================================
-# enrich geojson
-# =============================================================================
+def micro_ops_text(likert: int) -> str:
+    # Kısa, doğrudan, “emir” gibi olmayan dil
+    if likert >= 5:
+        return "Öneri: Kritik yoğunluk görülebilir. Görünür devriye ve giriş–çıkış akslarında kısa süreli yoğunlaştırma değerlendirilebilir."
+    if likert == 4:
+        return "Öneri: Risk artışı olabilir. Transit/ana arter çevresinde kısa kontrollü tur planlanabilir."
+    if likert == 3:
+        return "Öneri: Rutin devriye yeterli; anomali gözlemi odaklı izleme yapılabilir."
+    if likert == 2:
+        return "Öneri: Düşük risk; standart devriye ve caydırıcılık odaklı dolaşım uygundur."
+    return "Öneri: Çok düşük risk; rutin görünürlük korunabilir."
+
+def render_legend_compact():
+    # “hover” cümlesi yerine yüzde dilimleri
+    with st.popover("🎨 Risk Ölçeği", use_container_width=False):
+        st.markdown("**Bu saat dilimi içinde göreli sınıflandırma**")
+        st.caption("Risk seviyeleri, seçili tarih+saat dilimindeki tüm hücrelerin risk skorları dağılımı %20’lik dilimlere bölünerek hesaplanır.")
+        items = [
+            (1, "Çok Düşük", "0–20"),
+            (2, "Düşük", "20–40"),
+            (3, "Orta", "40–60"),
+            (4, "Yüksek", "60–80"),
+            (5, "Çok Yüksek", "80–100"),
+        ]
+        for k, label, pct in items:
+            rgb = LIKERT[k][1]
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin:8px 0;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:14px;height:14px;border-radius:5px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>
+                    <div><b>{k}</b> — {label}</div>
+                  </div>
+                  <div style="opacity:0.75;">%{pct}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.caption("Not: Bu ölçek mutlak eşik değildir; aynı saat dilimindeki hücrelerin birbirine göre konumunu gösterir.")
+
 def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
     if not gj or df_hr.empty:
         return gj
 
     df = df_hr.copy()
 
-    # GEOID normalize
+    # GEOID
     geoid_col = _pick_col(df, ["GEOID", "geoid"])
     df["geoid"] = df[geoid_col].map(digits11) if geoid_col else ""
 
-    # p_event
+    # p & expected
     pe = _pick_col(df, ["p_event", "risk_prob"])
+    ex = _pick_col(df, ["expected_count", "expected_crimes"])
     df["_p_event"] = pd.to_numeric(df[pe], errors="coerce") if pe else np.nan
+    df["_expected"] = pd.to_numeric(df[ex], errors="coerce") if ex else np.nan
     df["p_event_txt"] = df["_p_event"].map(_fmt3)
-
-    # expected
-    exp = _pick_col(df, ["expected_count", "expected_crimes"])
-    df["_expected"] = pd.to_numeric(df[exp], errors="coerce") if exp else np.nan
     df["expected_txt"] = df["_expected"].map(_fmt_expected_band)
 
-    # top categories
+    # top cats
     t1 = _pick_col(df, ["top1_category", "top1_cat", "cat1"])
     t2 = _pick_col(df, ["top2_category", "top2_cat", "cat2"])
     t3 = _pick_col(df, ["top3_category", "top3_cat", "cat3"])
@@ -265,12 +237,15 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
     df["top2_category"] = _clean(df[t2]) if t2 else ""
     df["top3_category"] = _clean(df[t3]) if t3 else ""
 
-    # likert + color
-    df["risk_likert"] = risk_to_likert(df)
-    df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[0])
-    df["fill_color"] = df["risk_likert"].map(lambda k: LIKERT.get(int(k), ("Orta", DEFAULT_FILL))[1])
+    # ✅ SADECE BU SAAT DİLİMİ İÇİN: göreli likert
+    df["risk_likert"], _method = compute_relative_likert(df)
+    df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][0] if int(k) in LIKERT else "Orta")
+    df["fill_color"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][1] if int(k) in LIKERT else DEFAULT_FILL)
 
-    # ✅ tekilleştir
+    # mikro öneri tooltip içine
+    df["ops_tip"] = df["risk_likert"].map(lambda k: micro_ops_text(int(k)))
+
+    # tekilleştir
     df["_exp_num"] = pd.to_numeric(df["_expected"], errors="coerce").fillna(0.0)
     df = df.sort_values(["risk_likert", "_exp_num"], ascending=[False, False]).drop_duplicates("geoid", keep="first")
     dmap = df.set_index("geoid")
@@ -300,6 +275,7 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
         props["top1_category"] = ""
         props["top2_category"] = ""
         props["top3_category"] = ""
+        props["ops_tip"] = ""
         props["fill_color"] = DEFAULT_FILL
 
         if key and key in dmap.index:
@@ -310,16 +286,13 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
             props["top1_category"] = str(row.get("top1_category") or "")
             props["top2_category"] = str(row.get("top2_category") or "")
             props["top3_category"] = str(row.get("top3_category") or "")
+            props["ops_tip"] = str(row.get("ops_tip") or "")
             props["fill_color"] = row.get("fill_color", DEFAULT_FILL)
 
         feats_out.append({**feat, "properties": props})
 
     return {**gj, "features": feats_out}
 
-
-# =============================================================================
-# map
-# =============================================================================
 def draw_map(gj: dict):
     layer = pdk.Layer(
         "GeoJsonLayer",
@@ -338,13 +311,15 @@ def draw_map(gj: dict):
             "<br/><b>Risk Seviyesi:</b> {likert_label}"
             "<br/><b>Suç olasılığı (p):</b> {p_event_txt}"
             "<br/><b>Beklenen suç sayısı:</b> {expected_txt}"
-            "<hr style='opacity:0.30'/>"
+            "<hr style='opacity:0.28'/>"
             "<b>En olası 3 suç:</b>"
             "<br/>• {top1_category}"
             "<br/>• {top2_category}"
             "<br/>• {top3_category}"
+            "<hr style='opacity:0.28'/>"
+            "<b>Kolluk Notu:</b><br/>{ops_tip}"
         ),
-        "style": {"backgroundColor": "#111827", "color": "white"},
+        "style": {"backgroundColor": "#111827", "color": "white", "maxWidth": "360px"},
     }
     deck = pdk.Deck(
         layers=[layer],
@@ -354,91 +329,9 @@ def draw_map(gj: dict):
     )
     st.pydeck_chart(deck, use_container_width=True)
 
-
-# =============================================================================
-# OPS: genel + hücre özel
-# =============================================================================
-def make_ops_general(df_hr: pd.DataFrame, top_n: int = 20) -> dict:
-    tmp = df_hr.copy()
-    tmp["risk_likert"] = risk_to_likert(tmp)
-
-    exp = _pick_col(tmp, ["expected_count", "expected_crimes"])
-    tmp["_exp"] = pd.to_numeric(tmp[exp], errors="coerce").fillna(0.0) if exp else 0.0
-
-    top = tmp.sort_values(["risk_likert", "_exp"], ascending=[False, False]).head(top_n)
-    max_l = int(top["risk_likert"].max())
-    max_label = LIKERT.get(max_l, ("Orta", DEFAULT_FILL))[0]
-
-    t1 = _pick_col(top, ["top1_category", "top1_cat", "cat1"])
-    cats = top[t1].astype(str).replace("nan", "").replace("None", "").tolist() if t1 else []
-    top_cats = pd.Series([c for c in cats if c]).value_counts().head(3).index.tolist()
-
-    metrics = {
-        "Top hücre": f"{len(top)}",
-        "≥4 hücre": f"{int((top['risk_likert']>=4).sum())}",
-        "5 (kritik)": f"{int((top['risk_likert']>=5).sum())}",
-        "Beklenen toplam": _fmt_expected_band(float(top["_exp"].sum())),
-        "Risk medyan": f"{float(np.median(top['risk_likert'])):.1f}",
-    }
-
-    bullets = []
-    if max_l >= 4:
-        bullets += [
-            "Sıcak noktalarda görünür devriye yoğunluğu artırılabilir (Top-K hücreler öncelikli).",
-            "Transit/ana arter ve yoğun yaya akışlı bölgelerde kısa süreli yoğunlaştırılmış devriye önerilir.",
-            "Giriş–çıkış aksları ve kamera kör noktalarında çevrimli devriye değerlendirilebilir.",
-        ]
-    else:
-        bullets += [
-            "Rutin görünür devriye ve caydırıcılık odaklı dolaşım önerilir.",
-            "Risk artışı görülen mikro-bölgelerde kısa süreli kontrol turu planlanabilir.",
-        ]
-
-    if top_cats:
-        bullets.append(f"Bu saat diliminde öne çıkan suç türleri: {', '.join(top_cats)}.")
-    bullets.append("Not: Çıktılar bağlayıcı değildir; saha bilgisi ve amir değerlendirmesi ile birlikte yorumlanmalıdır.")
-
-    return {"title": f"Kolluk Önerisi (Saat dilimi özeti • en yüksek risk: {max_label})", "metrics": metrics, "bullets": bullets, "top": top}
-
-def make_ops_cell(cell_row: pd.Series) -> dict:
-    # Hücreye özel mikro öneri: risk + beklenen + top suçlara göre
-    likert = int(cell_row.get("risk_likert", 3))
-    label = LIKERT.get(likert, ("Orta", DEFAULT_FILL))[0]
-
-    exp = _safe_float(cell_row.get("_expected", np.nan), np.nan)
-    p = _safe_float(cell_row.get("_p_event", np.nan), np.nan)
-
-    t1 = str(cell_row.get("top1_category", "") or "")
-    t2 = str(cell_row.get("top2_category", "") or "")
-    t3 = str(cell_row.get("top3_category", "") or "")
-    cats = [c for c in [t1, t2, t3] if c]
-
-    bullets = []
-    if likert >= 5:
-        bullets.append("Kritik hücre: kısa süreli yoğunlaştırılmış devriye ve görünür caydırıcılık önerilir.")
-        bullets.append("Giriş–çıkış aksları, transit duraklar ve yaya yoğunluğu yüksek noktalara odaklanın.")
-    elif likert == 4:
-        bullets.append("Yüksek risk: devriye sıklığını artırın; kısa kontrollü turlar planlanabilir.")
-    else:
-        bullets.append("Orta/düşük risk: rutin devriye yeterli; anomali gözlemi odaklı izleme önerilir.")
-
-    if np.isfinite(exp) and exp >= 2:
-        bullets.append("Beklenen olay sayısı görece yüksek: aynı bölgede tekrar eden kontrol turu uygulanabilir.")
-    if np.isfinite(p) and p >= 0.9:
-        bullets.append("Olay olasılığı yüksek: görünürlük ve hızlı müdahale hazır bulundurulabilir.")
-
-    if cats:
-        bullets.append(f"Bu hücrede öne çıkan suç türleri: {', '.join(cats[:3])}.")
-
-    return {"title": f"Seçili Hücre Önerisi (Risk: {label})", "bullets": bullets}
-
-
-# =============================================================================
-# ENTRYPOINT
-# =============================================================================
 def render_anlik_risk_haritasi():
     st.markdown("# Anlık Risk Haritası")
-    st.caption("San Francisco yerel saatine göre mevcut saat dilimindeki risk düzeylerini 5’li ölçekte gösterir (seçim yok).")
+    st.caption("San Francisco yerel saatine göre mevcut saat dilimindeki risk düzeylerini 5’li ölçekte gösterir.")
 
     if _IMPORT_SRC_ERR is not None:
         st.error("`src.io_data` import edilemedi. `src/` klasörünü ve yolları kontrol edin.")
@@ -464,8 +357,11 @@ def render_anlik_risk_haritasi():
     today = pd.Timestamp(now_sf.date())
 
     dates = sorted(fc["date_norm"].dropna().unique())
-    sel_date = today if today in dates else max([d for d in dates if d <= today], default=dates[0])
+    if not dates:
+        st.error("Forecast içinde geçerli tarih yok.")
+        return
 
+    sel_date = today if today in dates else max([d for d in dates if d <= today], default=dates[0])
     labels = sorted(fc[hr_col].dropna().astype(str).unique().tolist())
     hr_label = _hour_to_bucket(now_sf.hour, labels) or (labels[0] if labels else None)
     if not hr_label:
@@ -474,84 +370,24 @@ def render_anlik_risk_haritasi():
 
     st.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}** • Tarih: **{pd.Timestamp(sel_date).date()}** • Dilim: **{hr_label}**")
 
+    # ✅ Senin istediğin cümle (daha düzgün)
+    st.info("Risk ölçeği, bu tarih ve saat dilimindeki hücrelere ait risk skorlarının dağılımı temel alınarak göreli (%20’lik dilimler) şekilde hesaplanmıştır.")
+
+    # Legend popover (yüzdeli)
+    render_legend_compact()
+
     df_hr = fc[(fc["date_norm"] == sel_date) & (fc[hr_col].astype(str) == str(hr_label))].copy()
     if df_hr.empty:
         st.warning("Bu tarih/saat dilimi için kayıt bulunamadı.")
         return
 
-    # Legend: harita üstünde popover
-    render_legend_popover()
-
-    # Map
     gj = load_geojson()
     if not gj:
         st.error(f"GeoJSON bulunamadı: `{GEOJSON_PATH}`")
         return
 
-    # enrich için df_hr içine risk_likert/p/expected gibi alanları da hazırlayalım
-    df_hr = df_hr.copy()
-    df_hr["risk_likert"] = risk_to_likert(df_hr)
-
-    pe = _pick_col(df_hr, ["p_event", "risk_prob"])
-    ex = _pick_col(df_hr, ["expected_count", "expected_crimes"])
-    df_hr["_p_event"] = pd.to_numeric(df_hr[pe], errors="coerce") if pe else np.nan
-    df_hr["_expected"] = pd.to_numeric(df_hr[ex], errors="coerce") if ex else np.nan
-
     gj_enriched = enrich_geojson(gj, df_hr)
     draw_map(gj_enriched)
 
-    st.divider()
-
-    # GENEL öneri (Top-N)
-    ops = make_ops_general(df_hr, top_n=20)
-    st.subheader("👮 " + ops["title"])
-    cols = st.columns(5)
-    met_keys = list(ops["metrics"].keys())
-    for i in range(min(5, len(met_keys))):
-        cols[i].metric(met_keys[i], ops["metrics"][met_keys[i]])
-    for b in ops["bullets"]:
-        st.write("•", b)
-
-    st.divider()
-
-    # HÜCRE ÖZEL (dropdown ile)
-    st.subheader("🎯 Seçili Hücre Analizi")
-    geoid_col = _pick_col(df_hr, ["GEOID", "geoid"])
-    if not geoid_col:
-        st.info("Forecast içinde GEOID bulunamadı; hücre seçimi devre dışı.")
-        return
-
-    df_hr["geoid"] = df_hr[geoid_col].map(digits11)
-    # tekilleştir
-    df_uni = df_hr.sort_values(["risk_likert"], ascending=False).drop_duplicates("geoid", keep="first")
-
-    options = df_uni["geoid"].dropna().astype(str).tolist()
-    # default: Top-N içinden ilk
-    default_geoid = options[0] if options else None
-
-    sel_geoid = st.selectbox(
-        "GEOID seç (haritada hover ile gördüğünü buradan seçebilirsin):",
-        options=options,
-        index=0 if default_geoid else 0,
-    )
-
-    row = df_uni[df_uni["geoid"].astype(str) == str(sel_geoid)].iloc[0]
-
-    # Hücre metrikleri
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("GEOID", str(sel_geoid))
-    c2.metric("Risk (Likert)", str(int(row.get("risk_likert", 3))))
-    c3.metric("p_event", _fmt3(row.get("_p_event", np.nan)))
-    c4.metric("Beklenen", _fmt_expected_band(row.get("_expected", np.nan)))
-
-    cell_ops = make_ops_cell(row)
-    st.markdown("**" + cell_ops["title"] + "**")
-    for b in cell_ops["bullets"]:
-        st.write("•", b)
-
-    with st.expander("🧪 Debug", expanded=False):
-        st.write("Kolonlar:", list(df_hr.columns))
-        st.write("risk_likert dağılımı:", df_hr["risk_likert"].value_counts(dropna=False))
-        t1 = _pick_col(df_hr, ["top1_category", "top1_cat", "cat1"])
-        if t1:
-            st.write("top1_category top10:", df_hr[t1].astype(str).value_counts().head(10))
+    # İstersen burada alt kısma sadece kısa not bırak:
+    st.caption("Not: Çıktılar karar destek amaçlıdır; saha bilgisi ve amir değerlendirmesi ile birlikte yorumlanmalıdır.")
