@@ -370,9 +370,6 @@ def render_anlik_risk_haritasi():
 
     st.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}** • Tarih: **{pd.Timestamp(sel_date).date()}** • Dilim: **{hr_label}**")
 
-    # ✅ Senin istediğin cümle (daha düzgün)
-    st.info("Risk ölçeği, bu tarih ve saat dilimindeki hücrelere ait risk skorlarının dağılımı temel alınarak göreli (%20’lik dilimler) şekilde hesaplanmıştır.")
-
     # Legend popover (yüzdeli)
     render_legend_compact()
 
@@ -391,3 +388,4 @@ def render_anlik_risk_haritasi():
 
     # İstersen burada alt kısma sadece kısa not bırak:
     st.caption("Not: Çıktılar karar destek amaçlıdır; saha bilgisi ve amir değerlendirmesi ile birlikte yorumlanmalıdır.")
+    st.caption("Risk ölçeği, bu tarih ve saat dilimindeki hücrelere ait risk skorlarının dağılımı temel alınarak göreli (%20’lik dilimler) şekilde hesaplanmıştır.")
