@@ -1,5 +1,5 @@
 # app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
-# ✅ Bu sürüm: senin mevcut dosya adlarınla uyumlu
+# ✅ Bu sürüm: mevcut dosya adlarınla uyumlu
 # pages/
 #   Anlik_Risk_Haritasi.py
 #   Suc_Zarar_Tahmini.py
@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import os
 import json
+import sys
 import traceback
+import importlib.util
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -136,9 +139,18 @@ DEPLOY_TIME = _cached_deploy_time()
 # 4) Import page modules (LAZY + debug-friendly)
 #    ✅ Dosya adlarınla uyumlu: pages/Anlik_Risk_Haritasi.py vb.
 #    ✅ Hata olursa ekrana traceback basar (gizlemez)
+#    ✅ Deploy/workdir farklarında sys.path fix
 # ---------------------------
+APP_DIR = Path(__file__).resolve().parent
+PAGES_DIR = APP_DIR / "pages"
+
 def _safe_import(module_path: str, func_name: str):
     try:
+        # ✅ Kritik fix: app.py'nin olduğu klasörü sys.path'e ekle
+        app_dir_str = str(APP_DIR)
+        if app_dir_str not in sys.path:
+            sys.path.insert(0, app_dir_str)
+
         mod = __import__(module_path, fromlist=[func_name])
         fn = getattr(mod, func_name)
         if not callable(fn):
@@ -295,6 +307,19 @@ def render_placeholder(title: str):
     st.markdown(f"# {title}")
     st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
 
+def render_import_diagnostics():
+    """Sadece import patladığında, sahayı bozmadan tanı döker."""
+    st.caption("Tanı (debug):")
+    st.write("CWD:", os.getcwd())
+    st.write("APP_DIR:", str(APP_DIR))
+    st.write("PAGES_DIR:", str(PAGES_DIR))
+    st.write("pages exists?:", PAGES_DIR.exists())
+    st.write("Anlik_Risk_Haritasi.py exists?:", (PAGES_DIR / "Anlik_Risk_Haritasi.py").exists())
+    st.write("sys.path[0:6]:", sys.path[:6])
+
+    spec = importlib.util.find_spec("pages")
+    st.write("find_spec('pages'):", None if spec is None else {"origin": spec.origin, "submodule_search_locations": str(spec.submodule_search_locations)})
+
 # ---------------------------
 # 8) Router
 # ---------------------------
@@ -305,8 +330,12 @@ elif current_page == "map":
     if render_anlik_risk_haritasi is None:
         render_placeholder(PAGES["map"])
         st.error("Harita modülü yüklenemedi. `pages/Anlik_Risk_Haritasi.py` dosyasını kontrol edin.")
+
+        # ✅ Import neden patlıyor? (bozmadan tanı)
+        render_import_diagnostics()
+
         if err_map:
-            st.caption("Import hatası (debug):")
+            st.caption("Import hatası (debug traceback):")
             st.code(err_map)
     else:
         render_anlik_risk_haritasi()
