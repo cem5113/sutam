@@ -1,13 +1,10 @@
-# -*- coding: utf-8 -*-
 # pages/Suc_Zarar_Tahmini.py
 # SUTAM — Suç + Zarar (HARM) Tahmini | Operasyonel Karar Destek (Kolluk-Dostu)
-#
-# REVİZE HEDEF:
-# - TABLO YOK
-# - Top-N kart listesi YOK (kalabalık yapıyor)
-# - Harita: SADECE bağlam (hover yok)
-# - Brifing: Kolluk GEOID seçince tek panelde gelsin
-# - (Opsiyon) Folium açılırsa haritadan tıklayıp GEOID seçimi yapılabilir
+# - Veri: data/forecast_7d_ops_harm_ready.csv  (fallback: /mnt/data/forecast_7d_ops_harm_ready.csv)
+# - GeoJSON: data/sf_cells.geojson
+# - Üstte tarih + saat aralığı seçimi
+# - Harita: mevcut GeoJsonLayer mantığı korunur
+# - Altta: Kolluğa Öneriler (datasetten ops_* + driver bayrakları + harm/risk özetleri)
 
 from __future__ import annotations
 
@@ -21,95 +18,61 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
-# ---------------------------------------------------------------------
-# SAFE IMPORT (src yoksa sayfa çökmesin)
-# ---------------------------------------------------------------------
-try:
-    from src.io_data import load_parquet_or_csv, prepare_forecast
-except Exception as e:
-    load_parquet_or_csv = None
-    prepare_forecast = None
-    _IMPORT_SRC_ERR = e
-else:
-    _IMPORT_SRC_ERR = None
 
 # =============================================================================
 # PATHS / CONSTANTS
 # =============================================================================
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
-TARGET_TZ = os.getenv("TARGET_TZ", "America/Los_Angeles")
-GEOJSON_PATH = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
+TARGET_TZ = "America/Los_Angeles"
+GEOJSON_PATH = os.getenv("GEOJSON_PATH", f"{DATA_DIR}/sf_cells.geojson")
 
-OPS_CANDIDATES = [
-    "/mnt/data/forecast_7d_ops_harm_ready.csv",
+OPS_HARM_CANDIDATES = [
     f"{DATA_DIR}/forecast_7d_ops_harm_ready.csv",
-    f"{DATA_DIR}/forecast_7d_ops_ready.parquet",
-    f"{DATA_DIR}/forecast_7d_ops_ready.csv",
-    "deploy/forecast_7d_ops_ready.parquet",
-    "deploy/forecast_7d_ops_ready.csv",
-    "data/forecast_7d_ops_ready.parquet",
-    "data/forecast_7d_ops_ready.csv",
+    "data/forecast_7d_ops_harm_ready.csv",
+    "/mnt/data/forecast_7d_ops_harm_ready.csv",  # (bu konuşmada mount edilen dosya)
 ]
 
+LIKERT = {
+    1: ("Çok Düşük",  [46, 204, 113]),
+    2: ("Düşük",      [88, 214, 141]),
+    3: ("Orta",       [241, 196, 15]),
+    4: ("Yüksek",     [230, 126, 34]),
+    5: ("Çok Yüksek", [192, 57, 43]),
+}
 DEFAULT_FILL = [220, 220, 220]
 
-# =============================================================================
-# CSS (compact)
-# =============================================================================
-def segmented_compat(label: str, options: list[str], default: str):
-    if hasattr(st, "segmented_control"):
-        return st.segmented_control(label, options=options, default=default)
-    idx = options.index(default) if default in options else 0
-    return st.radio(label, options=options, index=idx, horizontal=True)
 
-def _apply_global_css():
+# =============================================================================
+# UI CSS (tooltip overflow + compact)
+# =============================================================================
+def _apply_tooltip_css():
     st.markdown(
         """
         <style>
-          .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1180px; }
-
-          .sutam-card {
-            border: 1px solid rgba(148,163,184,.35);
-            border-radius: 16px;
-            padding: 14px 14px;
-            background: rgba(2,6,23,.25);
-            box-shadow: 0 14px 40px rgba(0,0,0,.12);
-            margin-bottom: 10px;
+          .deckgl-tooltip {
+            max-width: 360px !important;
+            max-height: 360px !important;
+            overflow: auto !important;
+            padding: 10px 12px !important;
+            line-height: 1.25 !important;
+            border-radius: 12px !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,.25) !important;
+            transform: translate(12px, 12px) !important;
           }
-
-          .sutam-card h3 { margin: 0 0 8px 0; font-size: 14px; letter-spacing:.2px; }
-
-          .sutam-kpi {
-            display:flex; gap:12px; align-items:baseline; flex-wrap:wrap;
-            margin-top:6px;
-          }
-          .sutam-kpi .v { font-weight:900; font-size: 20px; }
-          .sutam-kpi .t { color: rgba(226,232,240,.9); font-size: 12px; }
-
-          .badge {
-            display:inline-block;
-            padding: 2px 8px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 800;
-            border: 1px solid rgba(148,163,184,.35);
-            margin-right: 6px;
-          }
+          .deckgl-tooltip hr { margin: 8px 0 !important; opacity: .25 !important; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
+
 # =============================================================================
-# UTIL
+# HELPERS
 # =============================================================================
 def _first_existing(paths: list[str]) -> str | None:
     for p in paths:
-        try:
-            if os.path.exists(p):
-                return p
-        except Exception:
-            pass
+        if os.path.exists(p):
+            return p
     return None
 
 def _digits11(x) -> str:
@@ -129,15 +92,32 @@ def _safe_float(x, default=np.nan) -> float:
     except Exception:
         return default
 
-def _coerce_bool(x) -> bool:
-    if isinstance(x, (bool, np.bool_)):
-        return bool(x)
-    if x is None:
-        return False
-    s = str(x).strip().lower()
-    return s in ("1", "true", "t", "yes", "y")
+def _fmt3(x) -> str:
+    v = _safe_float(x, np.nan)
+    return "—" if not np.isfinite(v) else f"{v:.3f}"
+
+def _fmt_expected(x) -> str:
+    v = _safe_float(x, np.nan)
+    if not np.isfinite(v):
+        return "—"
+    v = max(0.0, v)
+    lo = int(np.floor(v))
+    hi = int(np.ceil(v))
+    return f"~{lo}" if lo == hi else f"~{lo}–{hi}"
+
+def _fmt_moneyish(x) -> str:
+    v = _safe_float(x, np.nan)
+    if not np.isfinite(v):
+        return "—"
+    # harm sayısı para olmayabilir; ama okunabilir kalsın:
+    if v >= 1000:
+        return f"{v:,.0f}"
+    if v >= 100:
+        return f"{v:.0f}"
+    return f"{v:.1f}"
 
 def _parse_range(tok: str):
+    # "21-24" -> (21,24) end exclusive
     if not isinstance(tok, str) or "-" not in tok:
         return None
     a, b = tok.split("-", 1)
@@ -149,174 +129,66 @@ def _parse_range(tok: str):
     e = max(1, min(24, e))
     return (s, e)
 
-def _hour_to_bucket(h: int, labels: list[str]) -> str | None:
-    parsed = []
-    for lab in labels:
-        rg = _parse_range(str(lab))
-        if rg:
-            parsed.append((str(lab), rg[0], rg[1]))
-    for lab, s, e in parsed:
-        if s <= h < e:
-            return lab
-    for lab, s, e in parsed:
-        if s > e and (h >= s or h < e):
-            return lab
-    return parsed[0][0] if parsed else None
+def _hour_range_sort_key(label: str) -> int:
+    rg = _parse_range(str(label))
+    return rg[0] if rg else 0
 
-def _dominant_flag_badges(r: pd.Series) -> str:
-    badges = []
-    if _coerce_bool(r.get("calls_flag")):
-        badges.append("☎️ Çağrı")
-    if _coerce_bool(r.get("neighbor_flag")):
-        badges.append("🧭 Komşu")
-    if _coerce_bool(r.get("poi_flag")):
-        badges.append("📍 POI")
-    if _coerce_bool(r.get("transit_flag")):
-        badges.append("🚇 Transit")
-    if _coerce_bool(r.get("weather_flag")):
-        badges.append("🌧️ Hava")
-    if _coerce_bool(r.get("time_flag")):
-        badges.append("🕒 Zaman")
-    return " • ".join(badges) if badges else "—"
+def _compute_likert_quintiles(values: pd.Series) -> pd.Series:
+    v = pd.to_numeric(values, errors="coerce")
+    if v.notna().sum() < 10:
+        return pd.Series([3] * len(v), index=v.index)
+    try:
+        bins = pd.qcut(v.rank(method="first"), 5, labels=[1, 2, 3, 4, 5])
+        return bins.astype(int)
+    except Exception:
+        qs = v.quantile([0.2, 0.4, 0.6, 0.8]).values.tolist()
+        q20, q40, q60, q80 = qs
+        lik = pd.Series(3, index=v.index)
+        lik[v <= q20] = 1
+        lik[(v > q20) & (v <= q40)] = 2
+        lik[(v > q40) & (v <= q60)] = 3
+        lik[(v > q60) & (v <= q80)] = 4
+        lik[v > q80] = 5
+        return lik.astype(int)
 
-def _driver_label(x: str) -> str:
-    m = {
-        "risk_core": "Model riski",
-        "calls": "Çağrı sinyali",
-        "neighbor": "Komşu baskısı",
-        "transit": "Transit etkisi",
-        "poi": "Riskli POI",
-        "weather": "Hava koşulu",
-        "time": "Zaman deseni",
-    }
-    return m.get(str(x or "").strip(), str(x or "—"))
-
-def _risk_text_hint(level: str) -> str:
-    level = str(level or "").strip().lower()
-    if "critical" in level or "çok yüksek" in level or "very high" in level:
-        return "P1/P2 hızlı intikal + görünür devriye (sıcak nokta)."
-    if "high" in level or "yüksek" in level:
-        return "Hedefli devriye + giriş/çıkış kontrolü + kısa tur döngüsü."
-    if "medium" in level or "orta" in level:
-        return "Kısa tur döngüsü + caydırıcı görünürlük + gözlemsel teyit."
-    return "Rutin devriye + gözlemsel teyit."
-
-# =============================================================================
-# KOLLUK DİLİ: seviyelendirme
-# =============================================================================
-def _qband(value: float, qs: tuple[float, float], labels=("Düşük", "Orta", "Yoğun")) -> str:
-    v = _safe_float(value, np.nan)
-    if not np.isfinite(v):
-        return "—"
-    q1, q2 = qs
-    if not (np.isfinite(q1) and np.isfinite(q2)):
-        if v <= 0:
-            return labels[0]
-        if v <= 2:
-            return labels[1]
-        return labels[2]
-    if v <= q1:
-        return labels[0]
-    if v <= q2:
-        return labels[1]
-    return labels[2]
-
-def _make_thresholds(d: pd.DataFrame) -> dict:
-    out = {}
-    def qpair(col):
-        s = pd.to_numeric(d.get(col, np.nan), errors="coerce").dropna()
-        if len(s) < 20:
-            return (np.nan, np.nan)
-        return (float(s.quantile(0.33)), float(s.quantile(0.66)))
-
-    for c in [
-        "bus_stop_count","train_stop_count","poi_total_count","poi_risk_score",
-        "911_request_count_hour_range","911_request_count_daily(before_24_hours)",
-        "neighbor_crime_7d","distance_to_bus","distance_to_train"
-    ]:
-        out[c] = qpair(c)
-    return out
-
-def _weather_text(r: pd.Series) -> str:
-    prcp = _safe_float(r.get("prcp"), np.nan)
-    if not np.isfinite(prcp):
-        return "Hava: Bilinmiyor"
-    if prcp <= 0.0:
-        return "Hava: Yağış beklenmiyor (kuru)"
-    if prcp < 1.0:
-        return "Hava: Hafif yağış ihtimali"
-    if prcp < 5.0:
-        return "Hava: Yağmurlu"
-    return "Hava: Şiddetli yağış"
-
-def _time_text(r: pd.Series) -> str:
-    wk = _coerce_bool(r.get("is_weekend"))
-    ng = _coerce_bool(r.get("is_night"))
-    if wk and ng:
-        return "Zaman: Hafta sonu gece (hareketlilik artar)"
-    if wk:
-        return "Zaman: Hafta sonu (kalabalık/etkinlik etkisi)"
-    if ng:
-        return "Zaman: Gece saatleri (görünür devriye önemli)"
-    return "Zaman: Gündüz/hafta içi (rutin akış)"
-
-def _transit_text(r: pd.Series, th: dict) -> str:
-    b = r.get("bus_stop_count", np.nan)
-    t = r.get("train_stop_count", np.nan)
-    b_lvl = _qband(b, th.get("bus_stop_count",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yoğun"))
-    t_lvl = _qband(t, th.get("train_stop_count",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yoğun"))
-
-    db = _safe_float(r.get("distance_to_bus"), np.nan)
-    dt = _safe_float(r.get("distance_to_train"), np.nan)
-
-    def near_level(dist, key):
-        q1, q2 = th.get(key, (np.nan, np.nan))
-        if not np.isfinite(_safe_float(dist)):
-            return "—"
-        if not (np.isfinite(q1) and np.isfinite(q2)):
-            if dist <= 200: return "Yakın"
-            if dist <= 600: return "Orta"
-            return "Uzak"
-        if dist <= q1: return "Yakın"
-        if dist <= q2: return "Orta"
-        return "Uzak"
-
-    db_lvl = near_level(db, "distance_to_bus")
-    dt_lvl = near_level(dt, "distance_to_train")
-
-    return f"Transit: Durak yoğunluğu (Otobüs:{b_lvl} / Tren:{t_lvl}) • Yakınlık (Otobüs:{db_lvl} / Tren:{dt_lvl})"
-
-def _poi_text(r: pd.Series, th: dict) -> str:
-    cnt = r.get("poi_total_count", np.nan)
-    risk = r.get("poi_risk_score", np.nan)
-    cnt_lvl = _qband(cnt, th.get("poi_total_count",(np.nan,np.nan)), labels=("Az", "Orta", "Çok"))
-    risk_lvl = _qband(risk, th.get("poi_risk_score",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yüksek"))
-
-    if cnt_lvl == "Çok" and risk_lvl in ("Orta","Yüksek"):
-        return "Çevre: POI yoğun • kalabalık/işletme kaynaklı risk artışı olası"
-    if risk_lvl == "Yüksek":
-        return "Çevre: Riskli POI baskın (kalabalık odak olasılığı)"
-    if cnt_lvl == "Çok":
-        return "Çevre: POI yoğun (yaya trafiği/kalabalık olasılığı)"
-    if cnt_lvl == "Az" and risk_lvl == "Düşük":
-        return "Çevre: POI etkisi düşük"
-    return "Çevre: POI etkisi orta"
-
-def _calls_text(r: pd.Series, th: dict) -> str:
-    h = r.get("911_request_count_hour_range", np.nan)
-    d1 = r.get("911_request_count_daily(before_24_hours)", np.nan)
-    hl = _qband(h, th.get("911_request_count_hour_range",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yüksek"))
-    dl = _qband(d1, th.get("911_request_count_daily(before_24_hours)",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yüksek"))
-    return f"Çağrı: Bu dilimde {hl} • Son 24s {dl}"
-
-def _neighbor_text(r: pd.Series, th: dict) -> str:
-    n = r.get("neighbor_crime_7d", np.nan)
-    lvl = _qband(n, th.get("neighbor_crime_7d",(np.nan,np.nan)), labels=("Düşük", "Orta", "Yüksek"))
-    return f"Komşu baskısı: {lvl} (son 7g çevre eğilimi)"
 
 # =============================================================================
 # LOADERS
 # =============================================================================
+@st.cache_data(show_spinner=False)
+def load_ops_harm_forecast() -> pd.DataFrame:
+    p = _first_existing(OPS_HARM_CANDIDATES)
+    if not p:
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(p)
+    except Exception:
+        return pd.DataFrame()
+
+    # normalize date
+    dc = _pick_col(df, ["date"])
+    if dc:
+        df[dc] = pd.to_datetime(df[dc], errors="coerce")
+        df["date_norm"] = df[dc].dt.normalize()
+    else:
+        df["date_norm"] = pd.NaT
+
+    # normalize hour_range
+    hc = _pick_col(df, ["hour_range", "hour_bucket"])
+    if hc:
+        df["hour_range_norm"] = df[hc].astype(str)
+    else:
+        df["hour_range_norm"] = ""
+
+    # normalize geoid
+    gc = _pick_col(df, ["GEOID", "geoid"])
+    if gc:
+        df["geoid_norm"] = df[gc].map(_digits11)
+    else:
+        df["geoid_norm"] = ""
+
+    return df
+
 @st.cache_data(show_spinner=False)
 def load_geojson() -> dict:
     if os.path.exists(GEOJSON_PATH):
@@ -324,176 +196,137 @@ def load_geojson() -> dict:
             return json.load(f)
     return {}
 
-@st.cache_data(show_spinner=False)
-def load_ops_ready() -> pd.DataFrame:
-    p = _first_existing(OPS_CANDIDATES)
-    if not p:
-        return pd.DataFrame()
-
-    if load_parquet_or_csv is not None:
-        df = load_parquet_or_csv(p)
-    else:
-        df = pd.read_parquet(p) if p.lower().endswith(".parquet") else pd.read_csv(p)
-
-    if df is None or getattr(df, "empty", True):
-        return pd.DataFrame()
-
-    if prepare_forecast is not None:
-        try:
-            df = prepare_forecast(df, gp=None)
-        except Exception:
-            pass
-    return df
 
 # =============================================================================
-# NORMALIZE
+# AGGREGATION (date+hour_range aralığı seçilirse)
 # =============================================================================
-def normalize_ops(df: pd.DataFrame) -> pd.DataFrame:
-    d = df.copy()
+def _aggregate_for_range(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aralık seçildiğinde (birden fazla slot), GEOID bazında özet üretir.
+    - expected_count & expected_harm: SUM (operasyon planlama)
+    - p_event / risk_score: MEAN
+    - top categories: en çok görülen (mode) (pratik ve hızlı)
+    - ops_*: en sık görülen kısa aksiyon (mode) + uzun metinlerden ilk dolu
+    """
+    if df.empty:
+        return df
 
-    geoid_col = _pick_col(d, ["GEOID", "geoid"])
-    d["geoid"] = d[geoid_col].map(_digits11) if geoid_col else ""
+    exp_col = _pick_col(df, ["expected_count", "expected_crimes"])
+    p_col   = _pick_col(df, ["p_event", "risk_prob", "prob_event"])
+    rs_col  = _pick_col(df, ["risk_score"])
+    harm_col = _pick_col(df, ["expected_harm", "harm_expected", "harm"])
 
-    date_col = _pick_col(d, ["date", "dt", "datetime"])
-    d["_dt"] = pd.to_datetime(d[date_col], errors="coerce") if date_col else pd.NaT
-    d["date_norm"] = d["_dt"].dt.normalize()
+    def _mode(s: pd.Series):
+        s = s.dropna().astype(str)
+        s = s[s != "nan"]
+        if s.empty:
+            return ""
+        return s.value_counts().index[0]
 
-    hr_col = _pick_col(d, ["hour_range", "hour_bucket"])
-    d["hour_range"] = d[hr_col].astype(str) if hr_col else "00-24"
+    group_cols = ["geoid_norm"]
 
-    p_col = _pick_col(d, ["p_event", "risk_prob", "risk_score"])
-    d["p_event"] = pd.to_numeric(d[p_col], errors="coerce") if p_col else np.nan
+    agg = pd.DataFrame(index=df["geoid_norm"].unique())
+    agg.index.name = "geoid_norm"
+    agg = agg.reset_index()
 
-    ex_col = _pick_col(d, ["expected_count", "expected_crimes"])
-    d["expected_count"] = pd.to_numeric(d[ex_col], errors="coerce") if ex_col else np.nan
-
-    harm_col = _pick_col(d, ["expected_harm", "harm_expected", "harm"])
-    d["expected_harm"] = pd.to_numeric(d[harm_col], errors="coerce") if harm_col else np.nan
-
-    ops_score_col = _pick_col(d, ["ops_rank_score"])
-    d["ops_rank_score"] = pd.to_numeric(d[ops_score_col], errors="coerce") if ops_score_col else d["expected_harm"]
-
-    rl_col = _pick_col(d, ["risk_level"])
-    if rl_col:
-        d["risk_level"] = d[rl_col].astype(str)
+    if exp_col:
+        agg["expected_count"] = df.groupby(group_cols)[exp_col].apply(lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()).values
     else:
-        rb_col = _pick_col(d, ["risk_bin"])
-        if rb_col:
-            mp = {1: "Very Low", 2: "Low", 3: "Medium", 4: "High", 5: "Critical"}
-            d["risk_level"] = pd.to_numeric(d[rb_col], errors="coerce").map(mp).fillna("Unknown")
-        else:
-            d["risk_level"] = "Unknown"
+        agg["expected_count"] = 0.0
 
+    if harm_col:
+        agg["expected_harm"] = df.groupby(group_cols)[harm_col].apply(lambda x: pd.to_numeric(x, errors="coerce").fillna(0).sum()).values
+    else:
+        agg["expected_harm"] = 0.0
+
+    if p_col:
+        agg["p_event"] = df.groupby(group_cols)[p_col].apply(lambda x: pd.to_numeric(x, errors="coerce").mean()).values
+    else:
+        agg["p_event"] = np.nan
+
+    if rs_col:
+        agg["risk_score"] = df.groupby(group_cols)[rs_col].apply(lambda x: pd.to_numeric(x, errors="coerce").mean()).values
+    else:
+        agg["risk_score"] = np.nan
+
+    # top categories
     for i in (1, 2, 3):
-        c = _pick_col(d, [f"top{i}_category", f"top{i}_cat"])
-        d[f"top{i}_category"] = d[c].astype(str).replace("nan", "").fillna("") if c else ""
+        c = _pick_col(df, [f"top{i}_category", f"top{i}_cat"])
+        agg[f"top{i}_category"] = df.groupby(group_cols)[c].apply(_mode).values if c else ""
 
-    for k in ["primary_driver", "secondary_driver", "driver_profile"]:
-        col = _pick_col(d, [k])
-        d[k] = d[col].astype(str) if col else ""
+    # ops text
+    act_short = _pick_col(df, ["ops_actions_short"])
+    rea_long  = _pick_col(df, ["ops_reasons_long", "ops_reasons"])
+    act_long  = _pick_col(df, ["ops_actions_long", "ops_actions"])
 
-    for k in ["weather_flag", "calls_flag", "neighbor_flag", "transit_flag", "poi_flag", "time_flag"]:
-        col = _pick_col(d, [k])
-        d[k] = d[col].apply(_coerce_bool) if col else False
+    agg["ops_actions_short"] = df.groupby(group_cols)[act_short].apply(_mode).values if act_short else ""
+    # uzunlar: ilk dolu
+    def _first_nonempty(s: pd.Series):
+        s = s.dropna().astype(str)
+        s = s[(s != "nan") & (s.str.strip() != "")]
+        return s.iloc[0] if len(s) else ""
 
-    for k in ["ops_actions_short", "ops_actions", "ops_reasons", "ops_actions_long", "ops_reasons_long"]:
-        col = _pick_col(d, [k])
-        d[k] = d[col].astype(str).fillna("") if col else ""
+    agg["ops_reasons_long"] = df.groupby(group_cols)[rea_long].apply(_first_nonempty).values if rea_long else ""
+    agg["ops_actions_long"] = df.groupby(group_cols)[act_long].apply(_first_nonempty).values if act_long else ""
 
-    for k in ["model_version", "run_id", "audit_tag", "forecast_generated_at", "forecast_horizon_days"]:
-        col = _pick_col(d, [k])
-        d[k] = d[col] if col else ""
+    return agg
 
-    opt_numeric = [
-        "prcp",
-        "bus_stop_count","train_stop_count","distance_to_bus","distance_to_train",
-        "poi_total_count","poi_risk_score",
-        "911_request_count_hour_range","911_request_count_daily(before_24_hours)",
-        "neighbor_crime_7d",
-        "is_night","is_weekend",
-    ]
-    for k in opt_numeric:
-        col = _pick_col(d, [k])
-        if col:
-            d[k] = pd.to_numeric(d[col], errors="coerce")
-
-    return d
 
 # =============================================================================
-# LIKERT / COLOR
+# GEOJSON ENRICH (harita aynı mantık)
 # =============================================================================
-def _quantile_likert(series: pd.Series, n=5, neutral=3) -> pd.Series:
-    v = pd.to_numeric(series, errors="coerce")
-    if v.notna().sum() < 10 or v.nunique(dropna=True) <= 1:
-        return pd.Series([neutral] * len(v), index=v.index)
-    try:
-        return pd.qcut(v.rank(method="first"), n, labels=list(range(1, n + 1))).astype(int)
-    except Exception:
-        return pd.Series([neutral] * len(v), index=v.index)
-
-LIKERT_OPS = {
-    1: ("İzle",        [196, 226, 255]),
-    2: ("Dikkat",      [148, 202, 255]),
-    3: ("Öncelikli",   [241, 196, 15]),
-    4: ("Çok Öncelik", [230, 126, 34]),
-    5: ("Acil",        [192, 57, 43]),
-}
-LIKERT_RISK = {
-    1: ("Çok Düşük",  [46, 204, 113]),
-    2: ("Düşük",      [88, 214, 141]),
-    3: ("Orta",       [241, 196, 15]),
-    4: ("Yüksek",     [230, 126, 34]),
-    5: ("Çok Yüksek", [192, 57, 43]),
-}
-LIKERT_HARM = {
-    1: ("Düşük Etki",  [96, 165, 250]),
-    2: ("Orta Etki",   [76, 147, 245]),
-    3: ("Yüksek Etki", [241, 196, 15]),
-    4: ("Çok Yüksek",  [230, 126, 34]),
-    5: ("Kritik Etki", [192, 57, 43]),
-}
-
-def compute_mode_likert(df_slice: pd.DataFrame, mode: str):
-    if df_slice.empty:
-        return pd.Series([], dtype=int), {"palette": LIKERT_OPS, "source_col": None}
-
-    if mode == "Zarar":
-        src = "expected_harm"
-        palette = LIKERT_HARM
-    elif mode == "Ops Öncelik":
-        src = "ops_rank_score" if "ops_rank_score" in df_slice.columns else "expected_harm"
-        palette = LIKERT_OPS
-    else:
-        src = "p_event"
-        palette = LIKERT_RISK
-
-    v = pd.to_numeric(df_slice.get(src, np.nan), errors="coerce")
-    lik = _quantile_likert(v, n=5, neutral=3)
-    return lik, {"palette": palette, "source_col": src}
-
-# =============================================================================
-# GEOJSON ENRICH (sadece renk; hover yok)
-# =============================================================================
-def enrich_geojson_fill_only(gj: dict, df_slice: pd.DataFrame, mode: str) -> dict:
-    if not gj or df_slice.empty:
+def enrich_geojson(gj: dict, df_slot: pd.DataFrame, metric_for_color: str) -> dict:
+    if not gj or df_slot.empty:
         return gj
 
-    d = df_slice.copy()
-    lik, meta = compute_mode_likert(d, mode)
-    d["_lik"] = lik.clip(1, 5)
-    palette = meta.get("palette") or LIKERT_OPS
-    d["_fill"] = d["_lik"].map(lambda k: palette[int(k)][1])
+    df = df_slot.copy()
 
-    d["_tie"] = pd.to_numeric(d.get("ops_rank_score", d.get("expected_harm", np.nan)), errors="coerce").fillna(-np.inf)
-    d = (
-        d.sort_values(["_lik", "_tie"], ascending=[False, False])
-          .drop_duplicates("geoid", keep="first")
-          .set_index("geoid")
+    # geoid
+    if "geoid_norm" not in df.columns:
+        gc = _pick_col(df, ["GEOID", "geoid"])
+        df["geoid_norm"] = df[gc].map(_digits11) if gc else ""
+
+    # columns
+    p_col    = _pick_col(df, ["p_event", "risk_prob", "prob_event"])
+    exp_col  = _pick_col(df, ["expected_count", "expected_crimes"])
+    harm_col = _pick_col(df, ["expected_harm", "harm_expected", "harm"])
+    ops_col  = _pick_col(df, ["ops_actions_short", "ops_actions"])
+
+    # text fields
+    df["p_event_txt"]   = pd.to_numeric(df[p_col], errors="coerce").map(_fmt3) if p_col else "—"
+    df["expected_txt"]  = pd.to_numeric(df[exp_col], errors="coerce").map(_fmt_expected) if exp_col else "—"
+    df["harm_txt"]      = pd.to_numeric(df[harm_col], errors="coerce").map(_fmt_moneyish) if harm_col else "—"
+    df["ops_note_txt"]  = df[ops_col].astype(str).replace("nan", "").fillna("") if ops_col else ""
+
+    for i in (1, 2, 3):
+        c = _pick_col(df, [f"top{i}_category", f"top{i}_cat"])
+        df[f"top{i}_category"] = df[c].astype(str).replace("nan", "").fillna("") if c else ""
+
+    # color metric -> likert
+    if metric_for_color == "harm":
+        src = harm_col or "expected_harm"
+        values = pd.to_numeric(df.get(src, np.nan), errors="coerce")
+    else:
+        # risk
+        rs_col = _pick_col(df, ["risk_score"]) or p_col or exp_col
+        values = pd.to_numeric(df.get(rs_col, np.nan), errors="coerce")
+
+    df["risk_likert"] = _compute_likert_quintiles(values).clip(1, 5)
+    df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][0])
+    df["fill_color"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][1])
+
+    # duplicates: keep highest likert then highest expected_count
+    df["_exp_num"] = pd.to_numeric(df[exp_col], errors="coerce").fillna(0.0) if exp_col else 0.0
+    df = (
+        df.sort_values(["risk_likert", "_exp_num"], ascending=[False, False])
+          .drop_duplicates("geoid_norm", keep="first")
     )
+    dmap = df.set_index("geoid_norm")
 
-    out_feats = []
+    feats_out = []
     for feat in gj.get("features", []):
         props = dict(feat.get("properties") or {})
+
         raw = None
         for k in ("geoid", "GEOID", "cell_id", "id", "geoid11", "geoid_11", "display_id"):
             if k in props:
@@ -507,20 +340,39 @@ def enrich_geojson_fill_only(gj: dict, df_slice: pd.DataFrame, mode: str) -> dic
 
         key = _digits11(raw)
         props["display_id"] = str(raw) if raw not in (None, "") else key
+
+        # defaults
+        props["likert_label"] = ""
+        props["p_event_txt"] = "—"
+        props["expected_txt"] = "—"
+        props["harm_txt"] = "—"
+        props["top1_category"] = ""
+        props["top2_category"] = ""
+        props["top3_category"] = ""
+        props["ops_note_txt"] = ""
         props["fill_color"] = DEFAULT_FILL
 
-        if key and key in d.index:
-            r = d.loc[key]
-            props["fill_color"] = r.get("_fill", DEFAULT_FILL)
+        if key and key in dmap.index:
+            row = dmap.loc[key]
+            props["likert_label"] = str(row.get("likert_label", "") or "")
+            props["p_event_txt"] = str(row.get("p_event_txt", "—") or "—")
+            props["expected_txt"] = str(row.get("expected_txt", "—") or "—")
+            props["harm_txt"] = str(row.get("harm_txt", "—") or "—")
+            props["top1_category"] = str(row.get("top1_category", "") or "")
+            props["top2_category"] = str(row.get("top2_category", "") or "")
+            props["top3_category"] = str(row.get("top3_category", "") or "")
+            props["ops_note_txt"] = str(row.get("ops_note_txt", "") or "")
+            props["fill_color"] = row.get("fill_color", DEFAULT_FILL)
 
-        out_feats.append({**feat, "properties": props})
+        feats_out.append({**feat, "properties": props})
 
-    return {**gj, "features": out_feats}
+    return {**gj, "features": feats_out}
+
 
 # =============================================================================
-# MAP RENDER (hover kapalı)
+# MAP (aynı yapı)
 # =============================================================================
-def draw_map_no_hover(gj: dict):
+def draw_map(gj: dict):
     layer = pdk.Layer(
         "GeoJsonLayer",
         gj,
@@ -529,321 +381,252 @@ def draw_map_no_hover(gj: dict):
         line_width_min_pixels=0.5,
         filled=True,
         get_fill_color="properties.fill_color",
-        pickable=False,  # hover/click yok
-        opacity=0.68,
+        pickable=True,
+        opacity=0.65,
     )
+
+    tooltip = {
+        "html": (
+            "<div style='font-weight:900; font-size:14px;'>GEOID: {display_id}</div>"
+            "<div><b>Risk Seviyesi:</b> {likert_label}</div>"
+            "<div><b>Suç olasılığı (p):</b> {p_event_txt}</div>"
+            "<div><b>Beklenen suç:</b> {expected_txt}</div>"
+            "<div><b>Beklenen zarar (HARM):</b> {harm_txt}</div>"
+            "<hr/>"
+            "<div style='font-weight:900;'>En olası 3 suç</div>"
+            "<div>• {top1_category}</div>"
+            "<div>• {top2_category}</div>"
+            "<div>• {top3_category}</div>"
+            "<hr/>"
+            "<div style='font-weight:900;'>Kolluk Notu</div>"
+            "<div>{ops_note_txt}</div>"
+        ),
+        "style": {"backgroundColor": "#0b1220", "color": "white"},
+    }
 
     deck = pdk.Deck(
         layers=[layer],
         initial_view_state=pdk.ViewState(latitude=37.7749, longitude=-122.4194, zoom=10),
         map_style="light",
-        tooltip=None,  # hover kapalı
+        tooltip=tooltip,
     )
     st.pydeck_chart(deck, use_container_width=True)
 
-# =============================================================================
-# SLICE
-# =============================================================================
-def _slice_by_date_hour(df: pd.DataFrame, sel_date: pd.Timestamp, hr_label: str) -> pd.DataFrame:
-    return df[(df["date_norm"] == sel_date) & (df["hour_range"].astype(str) == str(hr_label))].copy()
 
 # =============================================================================
-# KPI (az sayı)
+# KOLLUĞA ÖNERİLER PANELİ
 # =============================================================================
-def _kpi_text_levels(df_slice: pd.DataFrame) -> dict:
-    def lvl(col, labels):
-        s = pd.to_numeric(df_slice.get(col, np.nan), errors="coerce")
-        if s.notna().sum() < 20:
-            return "—"
-        q1 = float(s.quantile(0.33))
-        q2 = float(s.quantile(0.66))
-        v = float(s.mean())
-        return _qband(v, (q1, q2), labels=labels)
+def _render_ops_panel(df_slot: pd.DataFrame, title_suffix: str = ""):
+    if df_slot.empty:
+        st.info("Öneri üretmek için veri yok.")
+        return
 
-    return {
-        "cells": int(df_slice["geoid"].nunique()) if "geoid" in df_slice.columns else 0,
-        "risk": lvl("p_event", labels=("Daha sakin", "Dikkat", "Yüksek risk")),
-        "event": lvl("expected_count", labels=("Az olay", "Orta", "Yoğun olay")),
-        "harm": lvl("expected_harm", labels=("Düşük etki", "Orta etki", "Yüksek etki")),
-    }
+    exp_col = _pick_col(df_slot, ["expected_count", "expected_crimes"]) or "expected_count"
+    harm_col = _pick_col(df_slot, ["expected_harm", "harm_expected", "harm"]) or "expected_harm"
+    p_col = _pick_col(df_slot, ["p_event", "risk_prob", "prob_event"]) or "p_event"
 
-# =============================================================================
-# GEOID BRIEF (tek panel)
-# =============================================================================
-def build_geoid_brief(df_all: pd.DataFrame, df_slice: pd.DataFrame, geoid: str, sel_hr: str) -> dict:
-    geoid = _digits11(geoid)
-    if not geoid:
-        return {}
+    # Top-N riskli hücreler: expected_harm (yoksa expected_count)
+    metric = harm_col if harm_col in df_slot.columns else exp_col
+    tmp = df_slot.copy()
+    tmp["_metric"] = pd.to_numeric(tmp.get(metric, 0), errors="coerce").fillna(0.0)
+    tmp["_exp"] = pd.to_numeric(tmp.get(exp_col, 0), errors="coerce").fillna(0.0)
+    tmp["_p"] = pd.to_numeric(tmp.get(p_col, np.nan), errors="coerce")
 
-    # 7g profil
-    g = df_all[df_all["geoid"] == geoid].copy()
-    if g.empty:
-        return {}
-
-    g["_harm"] = pd.to_numeric(g.get("expected_harm", np.nan), errors="coerce").fillna(0.0)
-    by_hr = g.groupby("hour_range", dropna=False)["_harm"].mean().sort_values(ascending=False)
-    top_hours = by_hr.head(3).index.astype(str).tolist()
-
-    c = g.get("top1_category", pd.Series([], dtype=str)).astype(str).replace("nan", "")
-    c = c[(c.str.len() > 0) & (c.str.lower() != "unknown")]
-    top_cats = c.value_counts().head(5).index.tolist()
-
-    pdv = g.get("primary_driver", pd.Series([], dtype=str)).astype(str)
-    pdv = pdv[pdv.str.len() > 0]
-    top_driver = pdv.value_counts().head(1).index.tolist()
-    top_driver = top_driver[0] if top_driver else "risk_core"
-
-    flags7 = {}
-    for k in ["calls_flag","neighbor_flag","poi_flag","transit_flag","weather_flag","time_flag"]:
-        if k in g.columns:
-            flags7[k] = int(pd.to_numeric(g[k], errors="coerce").fillna(0).sum())
-
-    # bu dilimde (seçili saat) tek kayıt
-    cur = df_slice[df_slice["geoid"] == geoid].copy()
-    cur_row = None
-    if not cur.empty:
-        cur = cur.sort_values(["ops_rank_score"], ascending=False)
-        cur_row = cur.iloc[0]
-
-    return {
-        "geoid": geoid,
-        "top_hours": top_hours,
-        "top_cats": top_cats,
-        "top_driver": top_driver,
-        "flags7": flags7,
-        "cur_row": cur_row,
-        "sel_hr": sel_hr,
-    }
-
-def render_brief_panel(info: dict, df_slice: pd.DataFrame):
-    geoid = info["geoid"]
-    th = _make_thresholds(df_slice)
-
-    st.markdown(
-        f"""
-        <div class="sutam-card">
-          <div style="font-weight:900;font-size:16px;">📍 GEOID {geoid} — Brifing</div>
-          <div style="opacity:.85;margin-top:4px;">Seçilen dilim için tek öneri + 7 günlük kısa özet.</div>
-        </div>
-        """,
-        unsafe_allow_html=True
+    topn = (
+        tmp.sort_values(["_metric", "_exp"], ascending=[False, False])
+           .head(12)
+           .copy()
     )
 
-    # 7 günlük özet
-    s = []
-    if info.get("top_hours"):
-        s.append(f"⏱️ En kritik dilimler: **{' / '.join(info['top_hours'])}**")
-    if info.get("top_cats"):
-        s.append(f"🎯 Öne çıkan odak: **{' • '.join(info['top_cats'][:3])}**")
-    s.append(f"🧠 Baskın neden: **{_driver_label(info.get('top_driver'))}**")
-    st.markdown("### 📌 7 Günlük Özet")
-    st.write("\n\n".join(s))
+    ops_short = _pick_col(tmp, ["ops_actions_short"]) or _pick_col(tmp, ["ops_actions"]) or None
+    rea_long = _pick_col(tmp, ["ops_reasons_long", "ops_reasons"]) or None
+    act_long = _pick_col(tmp, ["ops_actions_long", "ops_actions"]) or None
 
-    # bağlam sinyali
-    flags7 = info.get("flags7", {}) or {}
-    if flags7:
-        st.markdown(
-            f"**Bağlam sinyali (7 gün):** "
-            f"☎️ {flags7.get('calls_flag',0)} • 🧭 {flags7.get('neighbor_flag',0)} • 📍 {flags7.get('poi_flag',0)} • "
-            f"🚇 {flags7.get('transit_flag',0)} • 🌧️ {flags7.get('weather_flag',0)} • 🕒 {flags7.get('time_flag',0)}"
-        )
+    st.markdown(f"### 👮 Kolluğa Öneriler{title_suffix}")
 
-    # seçili dilim önerisi
-    st.markdown("### ✅ Bu dilim için öneri")
-    cur = info.get("cur_row", None)
-    if cur is None:
-        st.info("Bu GEOID seçili dilimde görünmüyor (başka saat/tarih dene).")
-        return
+    # 1) Genel özet
+    total_exp = float(tmp["_exp"].sum())
+    total_harm = float(pd.to_numeric(tmp.get(harm_col, 0), errors="coerce").fillna(0.0).sum()) if harm_col in tmp.columns else np.nan
+    mean_p = float(tmp["_p"].mean()) if np.isfinite(tmp["_p"].mean()) else np.nan
 
-    risk = str(cur.get("risk_level","—") or "—")
-    driver = _driver_label(cur.get("primary_driver"))
-    prof = str(cur.get("driver_profile") or "—").strip() or "—"
-    flags_now = _dominant_flag_badges(cur)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Toplam beklenen suç", f"{total_exp:,.1f}")
+    c2.metric("Toplam beklenen zarar (HARM)", "—" if not np.isfinite(total_harm) else f"{total_harm:,.0f}")
+    c3.metric("Ortalama p", "—" if not np.isfinite(mean_p) else f"{mean_p:.3f}")
 
-    action = str(cur.get("ops_actions_short") or "").strip()
-    if len(action) < 3:
-        action = str(cur.get("ops_actions") or "").strip()
-    if len(action) < 3:
-        action = _risk_text_hint(risk)
+    # 2) Top-N listesi (kısa)
+    show_cols = ["geoid_norm", "_metric", "_exp", "_p"]
+    view = topn[show_cols].rename(
+        columns={
+            "geoid_norm": "GEOID",
+            "_metric": "Öncelik (HARM/Count)",
+            "_exp": "Beklenen suç",
+            "_p": "p",
+        }
+    )
 
-    st.success(action)
+    st.caption("Öncelik listesi: seçilen zaman aralığında en yüksek beklenen zarar (yoksa beklenen suç) üreten hücreler.")
+    st.dataframe(view, use_container_width=True, hide_index=True)
 
-    st.markdown("### 🧠 Neden / Bağlam (kolluk dili)")
-    why_lines = [
-        f"Risk seviyesi: {risk}",
-        f"Ana neden: {driver} (profil: {prof})",
-        f"Bağlam: {flags_now} • Dilim: {info.get('sel_hr','—')}",
-        _weather_text(cur),
-        _time_text(cur),
-        _calls_text(cur, th),
-        _neighbor_text(cur, th),
-        _transit_text(cur, th),
-        _poi_text(cur, th),
-    ]
-    st.write("\n\n".join(why_lines))
+    # 3) Hücre bazlı detay (kolluk metinleri)
+    geoids = topn["geoid_norm"].astype(str).unique().tolist()
+    if geoids:
+        pick = st.selectbox("Detay görmek için GEOID seç", geoids, index=0)
+        row = tmp[tmp["geoid_norm"].astype(str) == str(pick)].head(1)
+        if not row.empty:
+            r = row.iloc[0]
+            st.markdown("#### Seçili hücre — operasyon özeti")
+            st.write(
+                f"- **GEOID:** {pick}\n"
+                f"- **p:** {_fmt3(r.get(p_col))}\n"
+                f"- **Beklenen suç:** {_fmt_expected(r.get(exp_col))}\n"
+                f"- **Beklenen HARM:** {_fmt_moneyish(r.get(harm_col)) if harm_col in tmp.columns else '—'}"
+            )
+
+            if ops_short:
+                txt = str(r.get(ops_short, "") or "").strip()
+                if txt and txt.lower() != "nan":
+                    st.info(txt)
+
+            with st.expander("Gerekçe ve aksiyonlar (detay)", expanded=True):
+                if rea_long:
+                    rl = str(r.get(rea_long, "") or "").strip()
+                    if rl and rl.lower() != "nan":
+                        st.markdown("**Neden (dataset):**")
+                        st.write(rl)
+                if act_long:
+                    al = str(r.get(act_long, "") or "").strip()
+                    if al and al.lower() != "nan":
+                        st.markdown("**Önerilen aksiyon (dataset):**")
+                        st.write(al)
+
+            # Driver bayrakları (varsa)
+            flags = []
+            for col in ["calls_flag", "neighbor_flag", "transit_flag", "poi_flag", "weather_flag", "time_flag", "impact_flag"]:
+                c = _pick_col(tmp, [col])
+                if c and str(r.get(c, "")).strip() not in ("", "nan", "None"):
+                    v = str(r.get(c))
+                    if v.lower() in ("1", "true", "yes"):
+                        flags.append(col.replace("_flag", ""))
+            if flags:
+                st.caption("Baskın sinyal alanları: " + ", ".join(flags))
+
 
 # =============================================================================
-# MAIN
+# PAGE ENTRYPOINT
 # =============================================================================
 def render_suc_zarar_tahmini():
-    _apply_global_css()
+    _apply_tooltip_css()
 
-    st.markdown("# 🧭 Suç & Zarar Etkisi — Operasyon Paneli")
-    st.caption("Amaç: **Ne zaman, nerede, neye dikkat etmeli ve ne yapmalı?** (Karar desteğidir.)")
+    st.markdown("# 🧭 Suç + Zarar (HARM) Tahmini")
+    st.caption(
+        "Operasyonel karar destek amaçlıdır. Zaman aralığı seçerek haritayı ve kolluk önerilerini aynı ekranda görürsünüz."
+    )
 
-    if _IMPORT_SRC_ERR is not None:
-        st.error("`src.io_data` import edilemedi. `src/` klasörünü ve yolları kontrol edin.")
-        st.code(repr(_IMPORT_SRC_ERR))
-        return
-
-    raw = load_ops_ready()
-    if raw is None or raw.empty:
+    df = load_ops_harm_forecast()
+    if df.empty:
         st.error(
-            "Ops-ready veri bulunamadı/boş.\n\nAranan dosyalardan bazıları:\n"
-            + "\n".join([f"- {p}" for p in OPS_CANDIDATES[:6]])
+            "Ops+Harm forecast CSV bulunamadı/boş.\n\nBeklenen dosyalardan biri:\n"
+            + "\n".join([f"- {p}" for p in OPS_HARM_CANDIDATES])
         )
         return
-
-    df = normalize_ops(raw)
 
     gj = load_geojson()
     if not gj:
         st.error(f"GeoJSON bulunamadı: `{GEOJSON_PATH}`")
         return
 
+    # --- seçimler ---
     now_sf = datetime.now(ZoneInfo(TARGET_TZ))
-    dates = sorted(df["date_norm"].dropna().unique())
+
+    dates = sorted([d for d in df["date_norm"].dropna().unique()])
     if not dates:
-        st.error("Veride geçerli tarih bulunamadı.")
+        st.error("Veride geçerli `date` bulunamadı.")
         return
 
-    default_date = pd.Timestamp(now_sf.date())
-    if default_date not in dates:
-        past = [d for d in dates if d <= default_date]
-        default_date = max(past) if past else dates[0]
+    hr_labels = sorted(df["hour_range_norm"].dropna().unique().tolist(), key=_hour_range_sort_key)
+    if not hr_labels:
+        st.error("Veride geçerli `hour_range` bulunamadı.")
+        return
 
-    hr_labels = sorted(df["hour_range"].dropna().astype(str).unique().tolist())
-    default_hr = _hour_to_bucket(now_sf.hour, hr_labels) or (hr_labels[0] if hr_labels else "00-03")
+    # varsayılanlar: SF now'a en yakın
+    today = pd.Timestamp(now_sf.date()).normalize()
+    default_date = today if today in dates else dates[0]
+    default_hr = None
+    for lab in hr_labels:
+        rg = _parse_range(lab)
+        if rg and (rg[0] <= now_sf.hour < rg[1]):
+            default_hr = lab
+            break
+    default_hr = default_hr or hr_labels[0]
 
-    c1, c2, c3 = st.columns([1.25, 1.0, 1.4])
+    st.markdown("### ⏱️ Zaman seçimi")
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
     with c1:
-        sel_date = st.selectbox(
-            "📅 Tarih",
-            options=dates,
-            index=dates.index(default_date) if default_date in dates else 0,
-            format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
-        )
+        start_date = st.selectbox("Başlangıç tarih", dates, index=dates.index(default_date))
     with c2:
-        sel_hr = st.selectbox("⏰ Saat dilimi", options=hr_labels, index=hr_labels.index(default_hr) if default_hr in hr_labels else 0)
-    with c3:
-        mode = segmented_compat("🗺️ Harita modu", options=["Risk", "Zarar", "Ops Öncelik"], default="Ops Öncelik")
+        end_date = st.selectbox("Bitiş tarih", dates, index=dates.index(default_date))
+    # sıralama düzelt
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
 
-    df_slice = _slice_by_date_hour(df, sel_date, sel_hr)
-    if df_slice.empty:
-        st.warning("Seçili tarih/saat dilimi için kayıt yok.")
+    with c3:
+        start_hr = st.selectbox("Başlangıç dilim", hr_labels, index=hr_labels.index(default_hr))
+    with c4:
+        end_hr = st.selectbox("Bitiş dilim", hr_labels, index=hr_labels.index(default_hr))
+
+    # dilim aralığını set'e çevir
+    hr_labels_sorted = hr_labels[:]  # already sorted
+    i1 = hr_labels_sorted.index(start_hr)
+    i2 = hr_labels_sorted.index(end_hr)
+    if i2 < i1:
+        i1, i2 = i2, i1
+    hr_pick = set(hr_labels_sorted[i1:i2 + 1])
+
+    # metrik seçimi (renk)
+    metric_for_color = st.radio(
+        "Harita renklendirme metriği",
+        options=["Risk (göreli)", "Zarar/HARM (göreli)"],
+        horizontal=True,
+        index=0,
+    )
+    metric_key = "harm" if "HARM" in metric_for_color else "risk"
+
+    st.caption(
+        f"SF saati: **{now_sf:%Y-%m-%d %H:%M}**  •  Seçim: **{pd.Timestamp(start_date).date()} → {pd.Timestamp(end_date).date()}** "
+        f"ve **{hr_labels_sorted[i1]} → {hr_labels_sorted[i2]}**"
+    )
+
+    # --- filtre ---
+    mask = (
+        (df["date_norm"] >= pd.Timestamp(start_date)) &
+        (df["date_norm"] <= pd.Timestamp(end_date)) &
+        (df["hour_range_norm"].astype(str).isin(hr_pick))
+    )
+    df_sel = df[mask].copy()
+    if df_sel.empty:
+        st.warning("Bu tarih/saat aralığı için kayıt bulunamadı.")
         return
 
-    # Sidebar summary
-    st.sidebar.markdown("### 🎯 Vardiya Özeti")
-    st.sidebar.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}**")
-    st.sidebar.write(f"**Tarih:** {pd.Timestamp(sel_date).strftime('%Y-%m-%d')}")
-    st.sidebar.write(f"**Dilim:** {sel_hr}")
-    st.sidebar.write(f"**Mod:** {mode}")
+    # tek slot mu? (tek gün ve tek dilim)
+    is_single_slot = (pd.Timestamp(start_date) == pd.Timestamp(end_date)) and (len(hr_pick) == 1)
 
-    # KPI
-    kpi = _kpi_text_levels(df_slice)
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        st.markdown(
-            f"""
-            <div class="sutam-card">
-              <h3>Aktif Bölge</h3>
-              <div class="sutam-kpi"><div class="v">{kpi["cells"]}</div><div class="t">hücre (GEOID)</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with k2:
-        st.markdown(
-            f"""
-            <div class="sutam-card">
-              <h3>Şehir Geneli Risk</h3>
-              <div class="sutam-kpi"><div class="v">{kpi["risk"]}</div><div class="t">bu dilim</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with k3:
-        st.markdown(
-            f"""
-            <div class="sutam-card">
-              <h3>Olay Yoğunluğu</h3>
-              <div class="sutam-kpi"><div class="v">{kpi["event"]}</div><div class="t">beklenen</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with k4:
-        st.markdown(
-            f"""
-            <div class="sutam-card">
-              <h3>Etki (Zarar)</h3>
-              <div class="sutam-kpi"><div class="v">{kpi["harm"]}</div><div class="t">beklenen</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    # slot -> harita dataframe
+    if is_single_slot:
+        df_map = df_sel.copy()
+        title_suffix = " (tek zaman dilimi)"
+    else:
+        df_map = _aggregate_for_range(df_sel)
+        title_suffix = " (seçilen aralığın özeti)"
 
-    st.divider()
+    # --- harita ---
+    st.markdown("### 🗺️ Harita")
+    gj_enriched = enrich_geojson(gj, df_map, metric_for_color=metric_key)
+    draw_map(gj_enriched)
 
-    # Map (hover yok)
-    gj_enriched = enrich_geojson_fill_only(gj, df_slice, mode)
-    draw_map_no_hover(gj_enriched)
-    st.caption("Harita: sadece renkli bağlam. Hover kapalı. Brifing için GEOID seç.")
-    st.divider()
+    st.caption("İpucu: Hücrelerin üzerine gelerek (hover) hem suç hem HARM hem de kolluk notunu görebilirsiniz.")
 
-    # GEOID Selection + Brief
-    st.subheader("🔎 GEOID Seç → Brifing")
-    geoids_in_slice = sorted(df_slice["geoid"].dropna().astype(str).unique().tolist())
-
-    cL, cR = st.columns([1.0, 2.0])
-    with cL:
-        # hızlı arama: text + dropdown
-        typed = st.text_input("GEOID (11 haneli) yaz", value="", placeholder="06075030101")
-        typed_geoid = _digits11(typed) if typed else ""
-
-        picked = st.selectbox(
-            "veya listeden seç",
-            options=[""] + geoids_in_slice,
-            index=0,
-            format_func=lambda x: ("Seçilmedi" if x == "" else x),
-        )
-
-        sel_geoid = typed_geoid if typed_geoid else picked
-        if sel_geoid:
-            st.caption(f"Seçilen GEOID: **{sel_geoid}**")
-        else:
-            st.caption("GEOID seçince brifing sağ tarafta görünür.")
-
-    with cR:
-        if not sel_geoid:
-            st.info("Sağ panel: GEOID seçilince brifing + 7 günlük özet burada görünür.")
-        else:
-            info = build_geoid_brief(df_all=df, df_slice=df_slice, geoid=sel_geoid, sel_hr=sel_hr)
-            if not info:
-                st.warning("Bu GEOID için veri bulunamadı.")
-            else:
-                render_brief_panel(info, df_slice=df_slice)
-
-    st.divider()
-
-    # Model/meta footer (çok kısa)
-    st.subheader("🧷 Model & Çalıştırma Bilgisi")
-    meta_cols = ["model_version", "run_id", "forecast_generated_at", "forecast_horizon_days"]
-    parts = []
-    for c in meta_cols:
-        if c in df.columns:
-            v = df_slice[c].dropna()
-            if len(v):
-                parts.append(f"**{c}:** {str(v.iloc[0])}")
-    st.write(" • ".join(parts) if parts else "—")
+    # --- kolluğa öneriler ---
+    with st.expander("👮 Kolluğa Öneriler", expanded=True):
+        _render_ops_panel(df_map, title_suffix=title_suffix)
