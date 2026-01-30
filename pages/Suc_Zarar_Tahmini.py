@@ -27,15 +27,7 @@ TARGET_TZ = "America/Los_Angeles"
 GEOJSON_PATH = os.getenv("GEOJSON_PATH", f"{DATA_DIR}/sf_cells.geojson")
 
 OPS_HARM_CANDIDATES = [
-    # parquet öncelikli
-    f"{DATA_DIR}/forecast_7d_ops_harm_ready.parquet",
-    "data/forecast_7d_ops_harm_ready.parquet",
-    "/mnt/data/forecast_7d_ops_harm_ready.parquet",
-
-    # csv fallback (olursa)
-    f"{DATA_DIR}/forecast_7d_ops_harm_ready.csv",
-    "data/forecast_7d_ops_harm_ready.csv",
-    "/mnt/data/forecast_7d_ops_harm_ready.csv",
+    "deploy/forecast_7d_ops_ready.parquet",
 ]
 
 LIKERT = {
