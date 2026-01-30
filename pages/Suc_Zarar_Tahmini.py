@@ -244,6 +244,26 @@ def _coerce_bool(x) -> bool:
         return True
     return False
 
+def _segmented_control_compat(label: str, options: list[str], default: str):
+    """
+    Streamlit sürüm uyumu:
+      - varsa st.segmented_control
+      - yoksa st.radio(horizontal=True)
+    """
+    if hasattr(st, "segmented_control"):
+        return st.segmented_control(label, options=options, default=default)
+    # fallback
+    idx = options.index(default) if default in options else 0
+    return st.radio(label, options=options, index=idx, horizontal=True)
+
+def _popover_compat(title: str):
+    """
+    st.popover yoksa expander ile aynı işi görür.
+    """
+    if hasattr(st, "popover"):
+        return st.popover(title, use_container_width=False)
+    return st.expander(title, expanded=False)
+    
 def _pct(x) -> str:
     v = _safe_float(x, np.nan)
     if not np.isfinite(v):
@@ -803,7 +823,7 @@ def legend_popover(mode: str, meta: dict):
     src = meta.get("source_col") or "—"
     palette = meta.get("palette") or (LIKERT_RISK if mode == "Risk" else (LIKERT_HARM if mode == "Zarar" else LIKERT_OPS))
 
-    with st.popover("🎨 Ölçek", use_container_width=False):
+    with _popover_compat("🎨 Ölçek"):
         st.markdown(
             f"**{mode}** düzeyi, **seçili tarih + saat dilimindeki hücre dağılımına göre** (%20’lik dilimler) üretilir."
         )
@@ -873,6 +893,7 @@ def render_suc_zarar_tahmini():
         return
 
     df = normalize_ops(raw)
+    st.caption(f"✅ Ops-ready yüklendi: {df.shape[0]:,} satır • {df.shape[1]} kolon • GEOID: {df['geoid'].nunique():,}")
 
     # GeoJSON
     gj = load_geojson()
@@ -908,7 +929,7 @@ def render_suc_zarar_tahmini():
     with c2:
         sel_hr = st.selectbox("⏰ Saat dilimi", options=hr_labels, index=hr_labels.index(default_hr) if default_hr in hr_labels else 0)
     with c3:
-        mode = st.segmented_control(
+        mode = _segmented_control_compat(
             "🗺️ Harita modu",
             options=["Risk", "Zarar", "Ops Öncelik"],
             default="Ops Öncelik",
