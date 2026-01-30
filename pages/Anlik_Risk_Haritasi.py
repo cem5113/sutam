@@ -62,40 +62,19 @@ def _apply_tooltip_css():
         <style>
           /* Deck.gl tooltip container */
           .deckgl-tooltip {
-            max-width: 320px !important;
-            max-height: 280px !important;
+            max-width: 340px !important;
+            max-height: 320px !important;
             overflow: auto !important;
-
-            padding: 8px 10px !important;
-            line-height: 1.18 !important;
-
+            padding: 10px 12px !important;
+            line-height: 1.25 !important;
             border-radius: 12px !important;
             box-shadow: 0 10px 30px rgba(0,0,0,.25) !important;
           }
-
-          /* Daha kompakt ayırıcı */
-          .deckgl-tooltip .tt-sep{
-            height: 1px;
-            background: rgba(255,255,255,.14);
-            margin: 6px 0 !important;
-          }
-
-          /* Liste satırları daha sıkı */
-          .deckgl-tooltip .tt-li{
-            margin: 2px 0 !important;
-          }
-
-          /* Başlıklar arası boşluk azalt */
-          .deckgl-tooltip .tt-h{
-            margin: 0 0 4px 0 !important;
-          }
-          .deckgl-tooltip .tt-title{
-            margin: 0 0 6px 0 !important;
-          }
-
-          /* Yukarı aç (cursor üstüne taşı) */
-          .deckgl-tooltip{
-            transform: translate(12px, -12px) translateY(-100%) !important;
+          /* Tooltip content spacing */
+          .deckgl-tooltip hr { margin: 8px 0 !important; opacity: .25 !important; }
+          /* Cursor'dan biraz sağa-aşağı kaydır: hep aşağı açılıyor hissini azaltır */
+          .deckgl-tooltip {
+            transform: translate(12px, 12px) !important;
           }
         </style>
         """,
@@ -370,17 +349,17 @@ def draw_map(gj: dict):
     # Tooltip alanları: properties'e yazdık, burada doğrudan {field} kullanıyoruz
     tooltip = {
         "html": (
-            "<div style='font-weight:700; font-size:15px; margin-bottom:6px;'>GEOID: {display_id}</div>"
+            "<div class='tt-title' style='font-weight:800; font-size:14px;'>GEOID: {display_id}</div>"
             "<div><b>Risk Seviyesi:</b> {likert_label}</div>"
             "<div><b>Suç olasılığı (p):</b> {p_event_txt}</div>"
             "<div><b>Beklenen suç sayısı:</b> {expected_txt}</div>"
-            "<hr/>"
-            "<div style='font-weight:700; margin-bottom:4px;'>En olası 3 suç</div>"
-            "<div>• {top1_category}</div>"
-            "<div>• {top2_category}</div>"
-            "<div>• {top3_category}</div>"
-            "<hr/>"
-            "<div style='font-weight:700; margin-bottom:2px;'>Kolluk Notu</div>"
+            "<div class='tt-sep'></div>"
+            "<div class='tt-h' style='font-weight:800;'>En olası 3 suç</div>"
+            "<div class='tt-li'>• {top1_category}</div>"
+            "<div class='tt-li'>• {top2_category}</div>"
+            "<div class='tt-li'>• {top3_category}</div>"
+            "<div class='tt-sep'></div>"
+            "<div class='tt-h' style='font-weight:800;'>Kolluk Notu</div>"
             "<div>{advice_txt}</div>"
         ),
         "style": {"backgroundColor": "#0b1220", "color": "white"},
