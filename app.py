@@ -358,8 +358,7 @@ elif current_page == "forecast":
             st.code(err_fc)
     else:
         render_suc_zarar_tahmini()
-["forecast"])
-
+        
 elif current_page == "patrol":
     render_placeholder(PAGES["patrol"])
 
