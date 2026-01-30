@@ -27,7 +27,6 @@ from streamlit_folium import st_folium
 # -----------------------------
 # 0) SAYFA AYAR
 # -----------------------------
-st.set_page_config(page_title="🌀 Suç Tahmini • Zarar", layout="wide")
 st.title("🌀 Suç Tahmini & Suç Zarar Tahmini — Haritalı GEOID görünüm")
 st.caption("Tek harita • Katman seçimi (Risk/Zarar) • Aynı filtreler (tarih/saat/GEOID)")
 
