@@ -349,20 +349,18 @@ def draw_map(gj: dict):
     # Tooltip alanları: properties'e yazdık, burada doğrudan {field} kullanıyoruz
     tooltip = {
         "html": (
-            "<div style='font-size:12px; line-height:1.25;'>"
-            "<b>GEOID:</b> {display_id}<br/>"
-            "<b>Risk Seviyesi:</b> {likert_label}<br/>"
-            "<b>Suç olasılığı (p):</b> {p_event_txt}<br/>"
-            "<b>Beklenen suç sayısı:</b> {expected_txt}"
+            "<div style='font-weight:700; font-size:15px; margin-bottom:6px;'>GEOID: {display_id}</div>"
+            "<div><b>Risk Seviyesi:</b> {likert_label}</div>"
+            "<div><b>Suç olasılığı (p):</b> {p_event_txt}</div>"
+            "<div><b>Beklenen suç sayısı:</b> {expected_txt}</div>"
             "<hr/>"
-            "<b>En olası 3 suç</b><br/>"
-            "• {top1_category}<br/>"
-            "• {top2_category}<br/>"
-            "• {top3_category}"
+            "<div style='font-weight:700; margin-bottom:4px;'>En olası 3 suç</div>"
+            "<div>• {top1_category}</div>"
+            "<div>• {top2_category}</div>"
+            "<div>• {top3_category}</div>"
             "<hr/>"
-            "<b>Kolluk Notu</b><br/>"
-            "{ops_note}"
-            "</div>"
+            "<div style='font-weight:700; margin-bottom:2px;'>Kolluk Notu</div>"
+            "<div>{advice_txt}</div>"
         ),
         "style": {"backgroundColor": "#0b1220", "color": "white"},
     }
@@ -379,53 +377,6 @@ def draw_map(gj: dict):
 # =============================================================================
 # PAGE ENTRYPOINT
 # =============================================================================
-def _apply_tooltip_css():
-    st.markdown(
-        """
-        <style>
-        /* Deck.gl tooltip (pydeck) — sağ üste sabitle */
-        .deckgl-tooltip{
-            position: fixed !important;
-            right: 18px !important;
-            top: 120px !important;          /* başlık+caption altına gelsin */
-            left: auto !important;
-            bottom: auto !important;
-            transform: none !important;
-            z-index: 99999 !important;
-
-            /* boyut + okunabilirlik */
-            max-width: 340px !important;
-            max-height: 360px !important;
-            overflow: auto !important;
-
-            /* font/punto */
-            font-size: 12px !important;
-            line-height: 1.25 !important;
-
-            /* görünüm */
-            padding: 12px 12px !important;
-            border-radius: 12px !important;
-            box-shadow: 0 10px 30px rgba(0,0,0,.30) !important;
-        }
-
-        /* Tooltip içindeki satırlar arası boşlukları azalt */
-        .deckgl-tooltip hr{
-            margin: 8px 0 !important;
-            opacity: .20 !important;
-        }
-        .deckgl-tooltip b{
-            font-size: 12.5px !important;
-        }
-
-        /* Tooltip’in içinde gereksiz boşluk oluşmasını azalt */
-        .deckgl-tooltip p{
-            margin: 0 !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
 def render_anlik_risk_haritasi():
     _apply_tooltip_css()
 
