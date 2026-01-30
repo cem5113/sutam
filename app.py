@@ -325,7 +325,8 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame, mode: str, hr_label: str) -> t
     if not geoid_col:
         return gj, df_hr, ""
 
-    df["geoid"] = df[geoid_col].map(_digits11)
+    df["geoid_norm"] = df[geoid_col].map(_digits11)
+    df["geoid"] = df["geoid_norm"] 
 
     cols = _get_metric_cols(df)
     p_col = cols["p_col"]
@@ -354,9 +355,9 @@ def enrich_geojson(gj: dict, df_hr: pd.DataFrame, mode: str, hr_label: str) -> t
 
     # tek satır/geoid
     df["_metric_num"] = pd.to_numeric(df["_metric"], errors="coerce").fillna(-1.0)
-    df = df.sort_values(["risk_likert","_metric_num"], ascending=[False, False]).drop_duplicates("geoid", keep="first")
-    dmap = df.set_index("geoid")
-
+    df = df.sort_values(["risk_likert","_metric_num"], ascending=[False, False]).drop_duplicates("geoid_norm", keep="first")
+    dmap = df.set_index("geoid_norm")
+    
     feats_out = []
     for feat in gj.get("features", []):
         props = dict(feat.get("properties") or {})
@@ -543,10 +544,15 @@ def _render_page():
             if gcol:
                 ops_topk = ops_topk.copy()
                 ops_topk["geoid_norm"] = ops_topk[gcol].map(_digits11)
+                if "geoid_norm" not in df_list.columns:
+                    if "geoid" in df_list.columns:
+                        df_list["geoid_norm"] = df_list["geoid"].map(_digits11)
+                    else:
+                        df_list["geoid_norm"] = ""
+                
                 df_list = df_list.merge(
                     ops_topk.drop(columns=[gcol], errors="ignore"),
-                    left_on="geoid",
-                    right_on="geoid_norm",
+                    on="geoid_norm",
                     how="left",
                     suffixes=("","_ops")
                 )
@@ -562,12 +568,10 @@ def _render_page():
                     ops_daily[dcol] = pd.to_datetime(ops_daily[dcol], errors="coerce").dt.normalize()
                     df_list = df_list.merge(
                         ops_daily.drop(columns=[gcol], errors="ignore"),
-                        left_on=["geoid"],
-                        right_on=["geoid_norm"],
+                        on="geoid_norm",
                         how="left",
                         suffixes=("","_daily")
                     )
-
         # Saha tablosu: en basit kolonlar
         show_cols = []
         for c in ["geoid","risk_likert","likert_label","p_event_txt","expected_txt","metric_txt","top1_category","top2_category","top3_category","saha_note"]:
