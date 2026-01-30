@@ -27,9 +27,15 @@ TARGET_TZ = "America/Los_Angeles"
 GEOJSON_PATH = os.getenv("GEOJSON_PATH", f"{DATA_DIR}/sf_cells.geojson")
 
 OPS_HARM_CANDIDATES = [
+    # parquet öncelikli
+    f"{DATA_DIR}/forecast_7d_ops_harm_ready.parquet",
+    "data/forecast_7d_ops_harm_ready.parquet",
+    "/mnt/data/forecast_7d_ops_harm_ready.parquet",
+
+    # csv fallback (olursa)
     f"{DATA_DIR}/forecast_7d_ops_harm_ready.csv",
     "data/forecast_7d_ops_harm_ready.csv",
-    "/mnt/data/forecast_7d_ops_harm_ready.csv",  # (bu konuşmada mount edilen dosya)
+    "/mnt/data/forecast_7d_ops_harm_ready.csv",
 ]
 
 LIKERT = {
@@ -160,12 +166,20 @@ def load_ops_harm_forecast() -> pd.DataFrame:
     p = _first_existing(OPS_HARM_CANDIDATES)
     if not p:
         return pd.DataFrame()
+
     try:
-        df = pd.read_csv(p)
+        # parquet mi?
+        if str(p).lower().endswith(".parquet"):
+            df = pd.read_parquet(p)   # pyarrow gerektirir (requirements'te var)
+        else:
+            df = pd.read_csv(p)
     except Exception:
         return pd.DataFrame()
 
-    # normalize date
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # --- normalize date ---
     dc = _pick_col(df, ["date"])
     if dc:
         df[dc] = pd.to_datetime(df[dc], errors="coerce")
@@ -173,19 +187,13 @@ def load_ops_harm_forecast() -> pd.DataFrame:
     else:
         df["date_norm"] = pd.NaT
 
-    # normalize hour_range
+    # --- normalize hour_range ---
     hc = _pick_col(df, ["hour_range", "hour_bucket"])
-    if hc:
-        df["hour_range_norm"] = df[hc].astype(str)
-    else:
-        df["hour_range_norm"] = ""
+    df["hour_range_norm"] = df[hc].astype(str) if hc else ""
 
-    # normalize geoid
+    # --- normalize geoid ---
     gc = _pick_col(df, ["GEOID", "geoid"])
-    if gc:
-        df["geoid_norm"] = df[gc].map(_digits11)
-    else:
-        df["geoid_norm"] = ""
+    df["geoid_norm"] = df[gc].map(_digits11) if gc else ""
 
     return df
 
