@@ -488,17 +488,27 @@ def _render_ops_panel(df_slot: pd.DataFrame, title_suffix: str = ""):
                 if txt and txt.lower() != "nan":
                     st.info(txt)
 
-            with st.expander("Gerekçe ve aksiyonlar (detay)", expanded=True):
+            t1, t2 = st.tabs(["Neden (dataset)", "Aksiyon (dataset)"])
+
+            with t1:
                 if rea_long:
                     rl = str(r.get(rea_long, "") or "").strip()
                     if rl and rl.lower() != "nan":
-                        st.markdown("**Neden (dataset):**")
                         st.write(rl)
+                    else:
+                        st.caption("Bu hücre için gerekçe metni yok.")
+                else:
+                    st.caption("Gerekçe kolonu bulunamadı.")
+
+            with t2:
                 if act_long:
                     al = str(r.get(act_long, "") or "").strip()
                     if al and al.lower() != "nan":
-                        st.markdown("**Önerilen aksiyon (dataset):**")
                         st.write(al)
+                    else:
+                        st.caption("Bu hücre için aksiyon metni yok.")
+                else:
+                    st.caption("Aksiyon kolonu bulunamadı.")
 
             # Driver bayrakları (varsa)
             flags = []
