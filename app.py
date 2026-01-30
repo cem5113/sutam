@@ -164,15 +164,9 @@ render_anlik_risk_haritasi, err_map = _safe_import(
 )
 
 # İstersen diğer sayfaları da modüler bağlarız (şimdilik placeholder)
-render_suc_zarar_tahmini, err_fc = _safe_import("pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini")
-elif current_page == "forecast":
-    if render_suc_zarar_tahmini is None:
-        render_placeholder(PAGES["forecast"])
-        st.error("Suc_Zarar_Tahmini modülü yüklenemedi.")
-        if err_fc:
-            st.code(err_fc)
-    else:
-        render_suc_zarar_tahmini()
+render_suc_zarar_tahmini, err_fc = _safe_import(
+    "pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini"
+)
 
 # render_devriye_planlama, err_pt = _safe_import("pages.Devriye_Planlama", "render_devriye_planlama")
 # render_raporlar_oneriler, err_rp = _safe_import("pages.Raporlar_Oneriler", "render_raporlar_oneriler")
@@ -350,7 +344,67 @@ elif current_page == "map":
         render_anlik_risk_haritasi()
 
 elif current_page == "forecast":
-    render_placeholder(PAGES["forecast"])
+    # 1) Eğer sayfa modülü yüklendiyse onu çalıştır
+    if render_suc_zarar_tahmini is not None:
+        render_suc_zarar_tahmini()
+    else:
+        # 2) Yoksa placeholder + import hatasını göster
+        render_placeholder(PAGES["forecast"])
+        st.error("Suc_Zarar_Tahmini modülü yüklenemedi.")
+        if err_fc:
+            st.caption("Import hatası (debug traceback):")
+            st.code(err_fc)
+
+        # 3) ✅ SMOKE TEST (sayfa çalışıyor mu, veri var mı?)
+        st.divider()
+        st.subheader("✅ Sistem Kontrolü (Smoke Test)")
+
+        DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
+        CAND = [
+            f"{DATA_DIR}/forecast_7d_ops_ready.parquet",
+            f"{DATA_DIR}/forecast_7d_ops_ready.csv",
+            "deploy/forecast_7d_ops_ready.parquet",
+            "deploy/forecast_7d_ops_ready.csv",
+            "data/forecast_7d_ops_ready.parquet",
+            "data/forecast_7d_ops_ready.csv",
+        ]
+
+        found = None
+        for p in CAND:
+            if os.path.exists(p):
+                found = p
+                break
+
+        if not found:
+            st.error("Ops-ready dosyası bulunamadı.")
+            st.code("\n".join(CAND))
+        else:
+            st.success(f"Ops-ready bulundu: {found}")
+
+            try:
+                if found.endswith(".parquet"):
+                    df = pd.read_parquet(found)
+                else:
+                    df = pd.read_csv(found)
+
+                st.write("Shape:", df.shape)
+                st.write("Kolon sayısı:", len(df.columns))
+
+                if "GEOID" in df.columns:
+                    st.write("Unique GEOID:", df["GEOID"].nunique())
+                elif "geoid" in df.columns:
+                    st.write("Unique GEOID:", df["geoid"].nunique())
+
+                if "date" in df.columns:
+                    d = pd.to_datetime(df["date"], errors="coerce")
+                    st.write("Date range:", str(d.min()), "→", str(d.max()))
+
+                st.caption("İlk 5 satır önizleme:")
+                st.dataframe(df.head(5), use_container_width=True)
+
+            except Exception as e:
+                st.error("Dosya okuma başarısız.")
+                st.code(repr(e))
 
     # ✅ SMOKE TEST (sayfa çalışıyor mu, veri var mı?)
     st.divider()
