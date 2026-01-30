@@ -1,5 +1,8 @@
 # app.py — SUTAM (FULL REVIZE • kurumsal sidebar • 60sn saat • hızlı açılış • page_link yok)
-# ✅ Bu sürüm: mevcut dosya adlarınla uyumlu
+# ✅ FIX-1: Widget değişince ana sayfaya dönme (query param kaybı) -> session_state ile sayfa kilitleme
+# ✅ FIX-2: streamlit.segmented_control yoksa fallback (radio) -> sayfalar çökmesin
+# ✅ FIX-3: forecast router içindeki "Smoke Test" tekrarları kaldırıldı (tek yerde)
+#
 # pages/
 #   Anlik_Risk_Haritasi.py
 #   Suc_Zarar_Tahmini.py
@@ -16,9 +19,11 @@ import importlib.util
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
-
+from pages.Suc_Zarar_Tahmini import render_suc_zarar_tahmini
 import streamlit as st
 import pandas as pd
+
+render_suc_zarar_tahmini = _safe_import("pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini")
 
 # ---------------------------
 # 0) Page config (FIRST)
@@ -29,6 +34,7 @@ st.set_page_config(
     layout="wide",
 )
 
+
 # ---------------------------
 # 1) Optional autorefresh (60s)
 # ---------------------------
@@ -37,10 +43,26 @@ def enable_autorefresh_60s():
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=60_000, key="sutam_clock_refresh")
     except Exception:
-        # paket yoksa sessiz geç
         pass
 
 enable_autorefresh_60s()
+
+
+# ---------------------------
+# 1.1) Streamlit compat shims
+#     - segmented_control yoksa sayfalar çökmesin
+# ---------------------------
+def _segmented_control_fallback(label, options, default=None, **kwargs):
+    if default in options:
+        idx = options.index(default)
+    else:
+        idx = 0
+    # horizontal True destekli (Streamlit 1.26+)
+    return st.radio(label, options=options, index=idx, horizontal=True)
+
+if not hasattr(st, "segmented_control"):
+    st.segmented_control = _segmented_control_fallback  # type: ignore[attr-defined]
+
 
 # ---------------------------
 # 2) Corporate CSS + default nav hide
@@ -103,6 +125,7 @@ def apply_corporate_style():
 
 apply_corporate_style()
 
+
 # ---------------------------
 # 3) Lightweight "last update" badge
 # ---------------------------
@@ -135,18 +158,16 @@ def _cached_deploy_time() -> str:
 
 DEPLOY_TIME = _cached_deploy_time()
 
+
 # ---------------------------
 # 4) Import page modules (LAZY + debug-friendly)
-#    ✅ Dosya adlarınla uyumlu: pages/Anlik_Risk_Haritasi.py vb.
-#    ✅ Hata olursa ekrana traceback basar (gizlemez)
-#    ✅ Deploy/workdir farklarında sys.path fix
 # ---------------------------
 APP_DIR = Path(__file__).resolve().parent
 PAGES_DIR = APP_DIR / "pages"
 
 def _safe_import(module_path: str, func_name: str):
     try:
-        # ✅ Kritik fix: app.py'nin olduğu klasörü sys.path'e ekle
+        # ✅ Kritik: app.py'nin olduğu klasörü sys.path'e ekle
         app_dir_str = str(APP_DIR)
         if app_dir_str not in sys.path:
             sys.path.insert(0, app_dir_str)
@@ -163,7 +184,6 @@ render_anlik_risk_haritasi, err_map = _safe_import(
     "pages.Anlik_Risk_Haritasi", "render_anlik_risk_haritasi"
 )
 
-# İstersen diğer sayfaları da modüler bağlarız (şimdilik placeholder)
 render_suc_zarar_tahmini, err_fc = _safe_import(
     "pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini"
 )
@@ -171,9 +191,11 @@ render_suc_zarar_tahmini, err_fc = _safe_import(
 # render_devriye_planlama, err_pt = _safe_import("pages.Devriye_Planlama", "render_devriye_planlama")
 # render_raporlar_oneriler, err_rp = _safe_import("pages.Raporlar_Oneriler", "render_raporlar_oneriler")
 
+
 # ---------------------------
-# 5) Simple internal navigation (no page_link)
+# 5) Internal navigation (NO page_link)
 #    - URL query param: ?p=home/map/forecast/patrol/reports
+#    ✅ FIX: sayfa seçimi session_state ile korunur (widget rerun'larında home'a dönmez)
 # ---------------------------
 PAGES = {
     "home": "🏠 Ana Sayfa",
@@ -184,13 +206,20 @@ PAGES = {
 }
 
 def get_current_page() -> str:
-    q = st.query_params
-    p = q.get("p", "home")
-    return p if p in PAGES else "home"
+    # İlk yüklemede URL'den oku, sonra state'den devam et
+    if "current_page" not in st.session_state:
+        q = st.query_params
+        p = q.get("p", "home")
+        st.session_state["current_page"] = p if p in PAGES else "home"
+    return st.session_state["current_page"]
 
 def set_page(p: str):
+    if p not in PAGES:
+        return
+    st.session_state["current_page"] = p
     st.query_params["p"] = p
     st.rerun()
+
 
 # ---------------------------
 # 6) Sidebar (ONLY 5 items + live clock)
@@ -198,7 +227,6 @@ def set_page(p: str):
 def render_corporate_sidebar(active_key: str):
     st.sidebar.markdown("## Kurumsal Menü")
 
-    # SF time (kolluk dili)
     try:
         sf_now = datetime.now(ZoneInfo("America/Los_Angeles"))
         st.sidebar.caption(f"🕒 {sf_now:%Y-%m-%d %H:%M:%S} (SF)")
@@ -218,8 +246,9 @@ def render_corporate_sidebar(active_key: str):
 current_page = get_current_page()
 render_corporate_sidebar(current_page)
 
+
 # ---------------------------
-# 7) Page renderers (Home is FAST)
+# 7) Pages
 # ---------------------------
 def render_home():
     st.markdown("# SUTAM — Operasyon Paneli")
@@ -306,22 +335,78 @@ def render_home():
     st.write("")
     st.divider()
 
+
 def render_placeholder(title: str):
     st.markdown(f"# {title}")
     st.info("Bu sayfa modüler şekilde eklenecek. Şimdilik navigasyon ve kurumsal tasarım tamam.")
 
+
 def render_import_diagnostics():
-    """Sadece import patladığında, sahayı bozmadan tanı döker."""
     st.caption("Tanı (debug):")
     st.write("CWD:", os.getcwd())
     st.write("APP_DIR:", str(APP_DIR))
     st.write("PAGES_DIR:", str(PAGES_DIR))
     st.write("pages exists?:", PAGES_DIR.exists())
     st.write("Anlik_Risk_Haritasi.py exists?:", (PAGES_DIR / "Anlik_Risk_Haritasi.py").exists())
+    st.write("Suc_Zarar_Tahmini.py exists?:", (PAGES_DIR / "Suc_Zarar_Tahmini.py").exists())
     st.write("sys.path[0:6]:", sys.path[:6])
 
     spec = importlib.util.find_spec("pages")
-    st.write("find_spec('pages'):", None if spec is None else {"origin": spec.origin, "submodule_search_locations": str(spec.submodule_search_locations)})
+    st.write(
+        "find_spec('pages'):",
+        None if spec is None else {"origin": spec.origin, "submodule_search_locations": str(spec.submodule_search_locations)},
+    )
+
+
+def render_smoke_test_ops_ready():
+    st.subheader("✅ Sistem Kontrolü (Smoke Test)")
+    data_dir = os.getenv("DATA_DIR", "data").rstrip("/")
+    cand = [
+        f"{data_dir}/forecast_7d_ops_ready.parquet",
+        f"{data_dir}/forecast_7d_ops_ready.csv",
+        "deploy/forecast_7d_ops_ready.parquet",
+        "deploy/forecast_7d_ops_ready.csv",
+        "data/forecast_7d_ops_ready.parquet",
+        "data/forecast_7d_ops_ready.csv",
+    ]
+
+    found = None
+    for p in cand:
+        if os.path.exists(p):
+            found = p
+            break
+
+    if not found:
+        st.error("Ops-ready dosyası bulunamadı.")
+        st.code("\n".join(cand))
+        return
+
+    st.success(f"Ops-ready bulundu: {found}")
+
+    try:
+        if found.endswith(".parquet"):
+            df = pd.read_parquet(found)
+        else:
+            df = pd.read_csv(found)
+
+        st.write("Shape:", df.shape)
+        st.write("Kolon sayısı:", len(df.columns))
+
+        if "GEOID" in df.columns:
+            st.write("Unique GEOID:", df["GEOID"].nunique())
+        elif "geoid" in df.columns:
+            st.write("Unique GEOID:", df["geoid"].nunique())
+
+        if "date" in df.columns:
+            d = pd.to_datetime(df["date"], errors="coerce")
+            st.write("Date range:", str(d.min()), "→", str(d.max()))
+
+        st.caption("İlk 5 satır önizleme:")
+        st.dataframe(df.head(5), use_container_width=True)
+    except Exception as e:
+        st.error("Dosya okuma başarısız.")
+        st.code(repr(e))
+
 
 # ---------------------------
 # 8) Router
@@ -333,10 +418,7 @@ elif current_page == "map":
     if render_anlik_risk_haritasi is None:
         render_placeholder(PAGES["map"])
         st.error("Harita modülü yüklenemedi. `pages/Anlik_Risk_Haritasi.py` dosyasını kontrol edin.")
-
-        # ✅ Import neden patlıyor? (bozmadan tanı)
         render_import_diagnostics()
-
         if err_map:
             st.caption("Import hatası (debug traceback):")
             st.code(err_map)
@@ -344,118 +426,18 @@ elif current_page == "map":
         render_anlik_risk_haritasi()
 
 elif current_page == "forecast":
-    # 1) Eğer sayfa modülü yüklendiyse onu çalıştır
-    if render_suc_zarar_tahmini is not None:
-        render_suc_zarar_tahmini()
-    else:
-        # 2) Yoksa placeholder + import hatasını göster
+    if render_suc_zarar_tahmini is None:
         render_placeholder(PAGES["forecast"])
         st.error("Suc_Zarar_Tahmini modülü yüklenemedi.")
+        render_import_diagnostics()
         if err_fc:
             st.caption("Import hatası (debug traceback):")
             st.code(err_fc)
 
-        # 3) ✅ SMOKE TEST (sayfa çalışıyor mu, veri var mı?)
         st.divider()
-        st.subheader("✅ Sistem Kontrolü (Smoke Test)")
-
-        DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
-        CAND = [
-            f"{DATA_DIR}/forecast_7d_ops_ready.parquet",
-            f"{DATA_DIR}/forecast_7d_ops_ready.csv",
-            "deploy/forecast_7d_ops_ready.parquet",
-            "deploy/forecast_7d_ops_ready.csv",
-            "data/forecast_7d_ops_ready.parquet",
-            "data/forecast_7d_ops_ready.csv",
-        ]
-
-        found = None
-        for p in CAND:
-            if os.path.exists(p):
-                found = p
-                break
-
-        if not found:
-            st.error("Ops-ready dosyası bulunamadı.")
-            st.code("\n".join(CAND))
-        else:
-            st.success(f"Ops-ready bulundu: {found}")
-
-            try:
-                if found.endswith(".parquet"):
-                    df = pd.read_parquet(found)
-                else:
-                    df = pd.read_csv(found)
-
-                st.write("Shape:", df.shape)
-                st.write("Kolon sayısı:", len(df.columns))
-
-                if "GEOID" in df.columns:
-                    st.write("Unique GEOID:", df["GEOID"].nunique())
-                elif "geoid" in df.columns:
-                    st.write("Unique GEOID:", df["geoid"].nunique())
-
-                if "date" in df.columns:
-                    d = pd.to_datetime(df["date"], errors="coerce")
-                    st.write("Date range:", str(d.min()), "→", str(d.max()))
-
-                st.caption("İlk 5 satır önizleme:")
-                st.dataframe(df.head(5), use_container_width=True)
-
-            except Exception as e:
-                st.error("Dosya okuma başarısız.")
-                st.code(repr(e))
-
-    # ✅ SMOKE TEST (sayfa çalışıyor mu, veri var mı?)
-    st.divider()
-    st.subheader("✅ Sistem Kontrolü (Smoke Test)")
-
-    DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
-    CAND = [
-        f"{DATA_DIR}/forecast_7d_ops_ready.parquet",
-        f"{DATA_DIR}/forecast_7d_ops_ready.csv",
-        "deploy/forecast_7d_ops_ready.parquet",
-        "deploy/forecast_7d_ops_ready.csv",
-        "data/forecast_7d_ops_ready.parquet",
-        "data/forecast_7d_ops_ready.csv",
-    ]
-
-    found = None
-    for p in CAND:
-        if os.path.exists(p):
-            found = p
-            break
-
-    if not found:
-        st.error("Ops-ready dosyası bulunamadı.")
-        st.code("\n".join(CAND))
+        render_smoke_test_ops_ready()
     else:
-        st.success(f"Ops-ready bulundu: {found}")
-
-        try:
-            if found.endswith(".parquet"):
-                df = pd.read_parquet(found)
-            else:
-                df = pd.read_csv(found)
-
-            st.write("Shape:", df.shape)
-            st.write("Kolon sayısı:", len(df.columns))
-
-            if "GEOID" in df.columns:
-                st.write("Unique GEOID:", df["GEOID"].nunique())
-            elif "geoid" in df.columns:
-                st.write("Unique GEOID:", df["geoid"].nunique())
-
-            if "date" in df.columns:
-                d = pd.to_datetime(df["date"], errors="coerce")
-                st.write("Date range:", str(d.min()), "→", str(d.max()))
-
-            st.caption("İlk 5 satır önizleme:")
-            st.dataframe(df.head(5), use_container_width=True)
-
-        except Exception as e:
-            st.error("Dosya okuma başarısız.")
-            st.code(repr(e))
+        render_suc_zarar_tahmini()
 
 elif current_page == "patrol":
     render_placeholder(PAGES["patrol"])
@@ -464,4 +446,7 @@ elif current_page == "reports":
     render_placeholder(PAGES["reports"])
 
 else:
+    # emniyet
+    st.session_state["current_page"] = "home"
+    st.query_params["p"] = "home"
     render_home()
