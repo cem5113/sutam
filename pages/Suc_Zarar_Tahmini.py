@@ -61,6 +61,18 @@ DEFAULT_FILL = [220, 220, 220]
 # =============================================================================
 # CSS (Kurumsal + Tooltip fix + compact)
 # =============================================================================
+def segmented_compat(label: str, options: list[str], default: str):
+    """
+    Streamlit sürüm uyumu:
+    - varsa st.segmented_control kullan
+    - yoksa st.radio(horizontal=True) ile taklit et
+    """
+    if hasattr(st, "segmented_control"):
+        return st.segmented_control(label, options=options, default=default)
+
+    idx = options.index(default) if default in options else 0
+    return st.radio(label, options=options, index=idx, horizontal=True)
+
 def _apply_global_css():
     st.markdown(
         """
@@ -879,7 +891,7 @@ def render_suc_zarar_tahmini():
     with c2:
         sel_hr = st.selectbox("⏰ Saat dilimi", options=hr_labels, index=hr_labels.index(default_hr) if default_hr in hr_labels else 0)
     with c3:
-        mode = st.segmented_control(
+        mode = segmented_compat(
             "🗺️ Harita modu",
             options=["Risk", "Zarar", "Ops Öncelik"],
             default="Ops Öncelik",
