@@ -163,6 +163,10 @@ render_anlik_risk_haritasi, err_map = _safe_import(
     "pages.Anlik_Risk_Haritasi", "render_anlik_risk_haritasi"
 )
 
+render_suc_zarar_tahmini, err_fc = _safe_import(
+    "pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini"
+)
+
 # İstersen diğer sayfaları da modüler bağlarız (şimdilik placeholder)
 # render_suc_zarar_tahmini, err_fc = _safe_import("pages.Suc_Zarar_Tahmini", "render_suc_zarar_tahmini")
 # render_devriye_planlama, err_pt = _safe_import("pages.Devriye_Planlama", "render_devriye_planlama")
@@ -341,7 +345,20 @@ elif current_page == "map":
         render_anlik_risk_haritasi()
 
 elif current_page == "forecast":
-    render_placeholder(PAGES["forecast"])
+    if render_suc_zarar_tahmini is None:
+        render_placeholder(PAGES["forecast"])
+        st.error(
+            "Suç & Suç Zararı Tahmini modülü yüklenemedi. "
+            "`pages/Suc_Zarar_Tahmini.py` dosyasını kontrol edin."
+        )
+        render_import_diagnostics()
+
+        if err_fc:
+            st.caption("Import hatası (debug traceback):")
+            st.code(err_fc)
+    else:
+        render_suc_zarar_tahmini()
+["forecast"])
 
 elif current_page == "patrol":
     render_placeholder(PAGES["patrol"])
