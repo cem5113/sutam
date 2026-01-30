@@ -1,7 +1,10 @@
-# -*- coding: utf-8 -*-
 # pages/Anlik_Risk_Haritasi.py
-# SUTAM — Anlık Risk Haritası (Operasyonel • OPS_READY kaynağı)
-# Amaç: Ne zaman, nerede, neye dikkat etmeli?
+# SUTAM — Anlık Risk Haritası (SF saatine göre, seçim yok)
+# - Veri: data/forecast_7d.parquet (fallback: deploy/full_fc.parquet)
+# - GeoJSON: data/sf_cells.geojson
+# - Risk 1–5: SADECE ilgili tarih+saat dilimindeki risk skorlarının dağılımına göre (quintile)
+# - Tooltip: GEOID + risk seviyesi + p + expected + top3 + kolluk notu (GEOID bazlı)
+# - Ayrı "seçili hücre analizi" YOK
 
 from __future__ import annotations
 
@@ -15,32 +18,31 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 
-# -----------------------------------------------------------------------------
-# SAFE IMPORT (opsiyonel)
-# -----------------------------------------------------------------------------
+# --- Güvenli import (src modülleri yoksa sayfa tamamen çökmesin) ---
 try:
-    from src.io_data import load_parquet_or_csv as _load_parquet_or_csv  # type: ignore
-except Exception:
-    _load_parquet_or_csv = None
+    from src.io_data import load_parquet_or_csv, prepare_forecast  # gp yok (hız)
+except Exception as e:
+    load_parquet_or_csv = None
+    prepare_forecast = None
+    _IMPORT_SRC_ERR = e
+else:
+    _IMPORT_SRC_ERR = None
 
 
 # =============================================================================
-# PATHS / CONSTANTS  (✅ YENİ DATA KAYNAĞI)
+# PATHS / CONSTANTS
 # =============================================================================
 DATA_DIR = os.getenv("DATA_DIR", "data").rstrip("/")
-
-OPS_CANDIDATES = [
-    f"{DATA_DIR}/forecast_7d_ops_ready.parquet",
-    f"{DATA_DIR}/forecast_7d_ops_ready.csv",
-    "deploy/forecast_7d_ops_ready.parquet",
-    "deploy/forecast_7d_ops_ready.csv",
-    "data/forecast_7d_ops_ready.parquet",
-    "data/forecast_7d_ops_ready.csv",
+FC_CANDIDATES = [
+    f"{DATA_DIR}/forecast_7d.parquet",
+    f"{DATA_DIR}/full_fc.parquet",
+    "data/forecast_7d.parquet",
+    "deploy/full_fc.parquet",
 ]
-
 GEOJSON_PATH = os.getenv("GEOJSON_PATH", "data/sf_cells.geojson")
 TARGET_TZ = "America/Los_Angeles"
 
+# 5'li Likert + renk (kurumsal ve sabit)
 LIKERT = {
     1: ("Çok Düşük",  [46, 204, 113]),
     2: ("Düşük",      [88, 214, 141]),
@@ -50,29 +52,29 @@ LIKERT = {
 }
 DEFAULT_FILL = [220, 220, 220]
 
-HOUR_RANGES = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
-
 
 # =============================================================================
-# CSS (tooltip sabit, kompakt)
+# GLOBAL UI FIXES (tooltip overflow + compact)
 # =============================================================================
 def _apply_tooltip_css():
     st.markdown(
         """
         <style>
+          /* Deck.gl tooltip container */
           .deckgl-tooltip {
-            max-width: 360px !important;
+            max-width: 340px !important;
+            max-height: 320px !important;
+            overflow: auto !important;
             padding: 10px 12px !important;
             line-height: 1.25 !important;
             border-radius: 12px !important;
-            font-size: 12px !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,.25) !important;
           }
+          /* Tooltip content spacing */
+          .deckgl-tooltip hr { margin: 8px 0 !important; opacity: .25 !important; }
+          /* Cursor'dan biraz sağa-aşağı kaydır: hep aşağı açılıyor hissini azaltır */
           .deckgl-tooltip {
             transform: translate(12px, 12px) !important;
-          }
-          /* Mobil/ dar ekranlarda taşma olmasın */
-          @media (max-width: 768px) {
-            .deckgl-tooltip { max-width: 300px !important; }
           }
         </style>
         """,
@@ -83,128 +85,99 @@ def _apply_tooltip_css():
 # =============================================================================
 # HELPERS
 # =============================================================================
-def _first_existing(paths):
+def _first_existing(paths: list[str]) -> str | None:
     for p in paths:
-        if p and os.path.exists(p):
+        if os.path.exists(p):
             return p
     return None
 
-def _digits11(x):
+def _digits11(x) -> str:
     s = "".join(ch for ch in str(x) if ch.isdigit())
     return s.zfill(11) if s else ""
 
-def _pick_col(df, names):
+def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     cols = {c.lower(): c for c in df.columns}
-    for n in names:
-        if n.lower() in cols:
-            return cols[n.lower()]
+    for k in candidates:
+        if k.lower() in cols:
+            return cols[k.lower()]
     return None
 
-def _safe_float(x):
+def _safe_float(x, default=np.nan) -> float:
     try:
-        if x is None:
-            return np.nan
         return float(x)
     except Exception:
-        return np.nan
+        return default
 
-def _fmt_expected(x):
-    v = _safe_float(x)
+def _fmt3(x) -> str:
+    v = _safe_float(x, np.nan)
+    return "—" if not np.isfinite(v) else f"{v:.3f}"
+
+def _fmt_expected(x) -> str:
+    v = _safe_float(x, np.nan)
     if not np.isfinite(v):
         return "—"
-    lo, hi = int(np.floor(v)), int(np.ceil(v))
+    v = max(0.0, v)
+    lo = int(np.floor(v))
+    hi = int(np.ceil(v))
     return f"~{lo}" if lo == hi else f"~{lo}–{hi}"
 
-def _fmt_harm(x):
-    v = _safe_float(x)
-    if not np.isfinite(v):
-        return "—"
-    # harm ölçeğin değişebilir: şimdilik 1 ondalık
-    return f"{v:.1f}"
-
-def _today_la():
-    return datetime.now(ZoneInfo(TARGET_TZ)).date()
-
-def _hour_range_now():
-    h = datetime.now(ZoneInfo(TARGET_TZ)).hour
-    # hangi slota denk geliyor?
-    for r in HOUR_RANGES:
-        a, b = r.split("-")
-        if int(a) <= h < int(b):
-            return r
-    return "00-03"
-
-def _compute_likert_quintiles(series: pd.Series):
-    v = pd.to_numeric(series, errors="coerce")
-    if v.notna().sum() < 10:
-        return pd.Series([3] * len(v), index=v.index)
+def _parse_range(tok: str):
+    # "21-24" -> (21,24) end exclusive
+    if not isinstance(tok, str) or "-" not in tok:
+        return None
+    a, b = tok.split("-", 1)
     try:
-        return pd.qcut(v.rank(method="first"), 5, labels=[1, 2, 3, 4, 5]).astype(int)
+        s = int(a.strip()); e = int(b.strip())
     except Exception:
-        # tekil değer/bağ sorunu fallback
-        return pd.Series([3] * len(v), index=v.index)
+        return None
+    s = max(0, min(23, s))
+    e = max(1, min(24, e))
+    return (s, e)
+
+def _hour_to_bucket(h: int, labels: list[str]) -> str | None:
+    parsed = []
+    for lab in labels:
+        rg = _parse_range(str(lab))
+        if rg:
+            parsed.append((str(lab), rg[0], rg[1]))
+
+    for lab, s, e in parsed:
+        if s <= h < e:
+            return lab
+
+    # wrap-around e.g. "21-3"
+    for lab, s, e in parsed:
+        if s > e and (h >= s or h < e):
+            return lab
+
+    return parsed[0][0] if parsed else None
 
 
 # =============================================================================
 # LOADERS
 # =============================================================================
-def _local_load_parquet_or_csv(path: str) -> pd.DataFrame:
-    if path.lower().endswith(".parquet"):
-        return pd.read_parquet(path)
-    if path.lower().endswith(".csv"):
-        return pd.read_csv(path)
-    raise ValueError(f"Desteklenmeyen uzantı: {path}")
+@st.cache_data(show_spinner=False)
+def load_forecast() -> pd.DataFrame:
+    p = _first_existing(FC_CANDIDATES)
+    if not p or load_parquet_or_csv is None:
+        return pd.DataFrame()
+
+    fc = load_parquet_or_csv(p)
+    if fc is None or getattr(fc, "empty", True):
+        return pd.DataFrame()
+
+    if prepare_forecast is not None:
+        try:
+            fc = prepare_forecast(fc, gp=None)  # hız için
+        except TypeError:
+            pass
+        except Exception:
+            pass
+
+    return fc
 
 @st.cache_data(show_spinner=False)
-def load_ops_ready() -> pd.DataFrame:
-    p = _first_existing(OPS_CANDIDATES)
-    if not p:
-        return pd.DataFrame()
-
-    try:
-        if _load_parquet_or_csv is not None:
-            df = _load_parquet_or_csv(p)
-        else:
-            df = _local_load_parquet_or_csv(p)
-    except Exception:
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    # ---- normalize minimum columns
-    geo_col = _pick_col(df, ["GEOID", "geoid"])
-    date_col = _pick_col(df, ["date"])
-    hr_col = _pick_col(df, ["hour_range", "hr_range", "hour"])
-
-    if not geo_col or not date_col:
-        return pd.DataFrame()
-
-    df = df.copy()
-    df["geoid"] = df[geo_col].map(_digits11)
-
-    # date normalize -> date_only (string)
-    dt = pd.to_datetime(df[date_col], errors="coerce")
-    df["date_dt"] = dt
-    df["date_only"] = dt.dt.date.astype(str)
-
-    # hour_range normalize
-    if hr_col and hr_col != "hour_range":
-        df["hour_range"] = df[hr_col].astype(str)
-    elif "hour_range" not in df.columns:
-        df["hour_range"] = ""
-
-    df["hour_range"] = df["hour_range"].astype(str).str.strip()
-
-    # numeric cols normalize (varsa)
-    for c in ["p_event", "risk_prob", "risk_score", "expected_crimes", "expected_count", "expected_harm"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    return df
-
-@st.cache_data(show_spinner=False)
-def load_geojson():
+def load_geojson() -> dict:
     if os.path.exists(GEOJSON_PATH):
         with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -212,123 +185,149 @@ def load_geojson():
 
 
 # =============================================================================
-# SAHA NOTU (1–2 cümle) — OPS_READY alanlarını kullanır
+# RISK (quintile) + LEGEND CUTS
 # =============================================================================
-def saha_notu(r: pd.Series) -> str:
-    notes = []
+def _compute_likert_quintiles(df_slice: pd.DataFrame) -> tuple[pd.Series, dict]:
+    """
+    Likert 1–5: Sadece ilgili tarih+saat dilimindeki hücrelerin risk skor dağılımına göre (quintile).
+    Dönüş:
+      - likert_series (index df_slice ile aynı)
+      - legend_meta: {"cuts": [q20,q40,q60,q80], "source_col": "..."}
+    """
+    # Risk kaynağı öncelik: risk_score -> p_event -> risk_prob -> expected_count (en son)
+    src = (
+        _pick_col(df_slice, ["risk_score"]) or
+        _pick_col(df_slice, ["p_event"]) or
+        _pick_col(df_slice, ["risk_prob"]) or
+        _pick_col(df_slice, ["expected_count"]) or
+        _pick_col(df_slice, ["expected_crimes"]) or
+        None
+    )
 
-    # flags varsa kullan
-    if bool(r.get("poi_flag", False)):
-        notes.append("Riskli POI yoğunluğu.")
-    if bool(r.get("calls_flag", False)):
-        notes.append("Çağrı yoğunluğu.")
-    if bool(r.get("neighbor_flag", False)):
-        notes.append("Komşu baskısı.")
-    if bool(r.get("time_flag", False)):
-        notes.append("Zaman riski (gece/hafta sonu).")
-    if bool(r.get("weather_flag", False)):
-        notes.append("Hava etkisi olası.")
+    if not src:
+        lik = pd.Series([3] * len(df_slice), index=df_slice.index)
+        return lik, {"cuts": [np.nan, np.nan, np.nan, np.nan], "source_col": None}
 
-    return " ".join(notes[:2])
+    v = pd.to_numeric(df_slice[src], errors="coerce")
+    # Tamamen NaN ise
+    if v.notna().sum() < 10:
+        lik = pd.Series([3] * len(df_slice), index=df_slice.index)
+        return lik, {"cuts": [np.nan, np.nan, np.nan, np.nan], "source_col": src}
+
+    # Quintile: rank(method="first") ile eşitliklerde sorun azalt
+    try:
+        bins = pd.qcut(v.rank(method="first"), 5, labels=[1, 2, 3, 4, 5])
+        lik = bins.astype(int)
+    except Exception:
+        # fallback: cut by quantiles manually
+        qs = v.quantile([0.2, 0.4, 0.6, 0.8]).values.tolist()
+        q20, q40, q60, q80 = qs
+        lik = pd.Series(3, index=df_slice.index)
+        lik[v <= q20] = 1
+        lik[(v > q20) & (v <= q40)] = 2
+        lik[(v > q40) & (v <= q60)] = 3
+        lik[(v > q60) & (v <= q80)] = 4
+        lik[v > q80] = 5
+
+    cuts = v.quantile([0.2, 0.4, 0.6, 0.8]).values.tolist()
+    return lik, {"cuts": cuts, "source_col": src}
 
 
 # =============================================================================
 # GEOJSON ENRICH
 # =============================================================================
-def enrich_geojson(gj: dict, df_sel: pd.DataFrame) -> dict:
-    if not gj or df_sel.empty:
+def _likert_advice(k: int) -> str:
+    # Tooltip içinde tek satır, kısa ve “kural” gibi değil; karar destek dili
+    if k >= 5:
+        return "Öneri: Kritik yoğunluk — görünür devriye ve kısa kontrollü tur artırılabilir."
+    if k == 4:
+        return "Öneri: Risk artışı olası — transit/ana arter çevresinde kısa kontrollü tur planlanabilir."
+    if k == 3:
+        return "Öneri: Orta risk — rutin devriye + caydırıcılık odaklı dolaşım önerilir."
+    if k == 2:
+        return "Öneri: Düşük risk — rutin dolaşım sürdürülür; gözlemsel teyit önerilir."
+    return "Öneri: Çok düşük risk — temel görünürlük ve izleme yeterli olabilir."
+
+def enrich_geojson(gj: dict, df_hr: pd.DataFrame) -> dict:
+    if not gj or df_hr.empty:
         return gj
 
-    d = df_sel.copy()
+    df = df_hr.copy()
 
-    # risk ve harm kolonları (ops_ready'de mevcut)
-    risk_col = _pick_col(d, ["risk_score", "risk_prob", "p_event"])
-    harm_col = _pick_col(d, ["expected_harm", "harm_expected"])
-    exp_col = _pick_col(d, ["expected_crimes", "expected_count"])
+    # GEOID normalize
+    geoid_col = _pick_col(df, ["GEOID", "geoid"])
+    df["geoid"] = df[geoid_col].map(_digits11) if geoid_col else ""
 
-    # likert
-    d["risk_likert"] = _compute_likert_quintiles(d[risk_col]) if risk_col else 3
-    d["harm_likert"] = _compute_likert_quintiles(d[harm_col]) if harm_col else 3
+    # p_event & expected
+    pe_col = _pick_col(df, ["p_event", "risk_prob", "prob_event"])
+    ex_col = _pick_col(df, ["expected_count", "expected_crimes", "mu", "lambda"])
 
-    # görsel alanlar
-    d["fill_color"] = d["risk_likert"].map(lambda k: LIKERT[int(k)][1])
-    d["expected_txt"] = d[exp_col].map(_fmt_expected) if exp_col else "—"
-    d["harm_txt"] = d[harm_col].map(_fmt_harm) if harm_col else "—"
-    d["harm_icon"] = d["harm_likert"].apply(lambda x: "⚠️" if int(x) >= 5 else "")
-    d["saha_notu"] = d.apply(saha_notu, axis=1)
+    df["p_event_txt"] = pd.to_numeric(df[pe_col], errors="coerce").map(_fmt3) if pe_col else "—"
+    df["expected_txt"] = pd.to_numeric(df[ex_col], errors="coerce").map(_fmt_expected) if ex_col else "—"
 
-    # top3 kategoriler (ops_ready)
+    # top categories (senin parquet'te top1_share vs var; biz sadece category'yi gösteriyoruz)
     for i in (1, 2, 3):
-        c = f"top{i}_category"
-        s = f"top{i}_share"
-        if c not in d.columns:
-            d[c] = ""
-        if s not in d.columns:
-            d[s] = np.nan
+        c = _pick_col(df, [f"top{i}_category", f"top{i}_cat", f"cat{i}"])
+        df[f"top{i}_category"] = df[c].astype(str).replace("nan", "").fillna("") if c else ""
 
-    # ops action (kısa)
-    if "ops_actions_short" not in d.columns:
-        d["ops_actions_short"] = ""
+    # Likert = quintile
+    lik, _legend_meta = _compute_likert_quintiles(df)
+    df["risk_likert"] = lik.clip(1, 5)
 
-    # risk_level (varsa)
-    if "risk_level" not in d.columns:
-        # risk_bin -> label fallback
-        if "risk_bin" in d.columns:
-            mp = {1: "Very Low", 2: "Low", 3: "Medium", 4: "High", 5: "Critical"}
-            d["risk_level"] = d["risk_bin"].map(mp).fillna("Unknown")
-        else:
-            d["risk_level"] = "Unknown"
+    df["likert_label"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][0])
+    df["fill_color"] = df["risk_likert"].map(lambda k: LIKERT[int(k)][1])
+    df["advice_txt"] = df["risk_likert"].map(lambda k: _likert_advice(int(k)))
 
-    # aynı geoid için: seçilen filtre içinde "expected_harm" (yoksa risk_score) en yüksek olanı al
-    rank_col = harm_col if harm_col else (risk_col if risk_col else None)
-    if rank_col:
-        d = d.sort_values(rank_col, ascending=False)
-    d = d.drop_duplicates("geoid", keep="first").set_index("geoid")
+    # Aynı GEOID birden fazla satırsa: (risk yüksek + expected yüksek) en öndeki kalsın
+    df["_exp_num"] = pd.to_numeric(df[ex_col], errors="coerce").fillna(0.0) if ex_col else 0.0
+    df = (
+        df.sort_values(["risk_likert", "_exp_num"], ascending=[False, False])
+          .drop_duplicates("geoid", keep="first")
+    )
+    dmap = df.set_index("geoid")
 
-    feats = []
-    for f in gj.get("features", []):
-        props = dict(f.get("properties") or {})
-        gid = _digits11(props.get("geoid") or props.get("GEOID"))
+    feats_out = []
+    for feat in gj.get("features", []):
+        props = dict(feat.get("properties") or {})
+
+        raw = None
+        for k in ("geoid", "GEOID", "cell_id", "id", "geoid11", "geoid_11", "display_id"):
+            if k in props:
+                raw = props[k]
+                break
+        if raw is None:
+            for k, v in props.items():
+                if "geoid" in str(k).lower():
+                    raw = v
+                    break
+
+        key = _digits11(raw)
+        props["display_id"] = str(raw) if raw not in (None, "") else key
 
         # defaults
-        props.update({
-            "display_id": gid,
-            "fill_color": DEFAULT_FILL,
-            "risk_level": "",
-            "expected_txt": "—",
-            "harm_txt": "—",
-            "harm_icon": "",
-            "saha_notu": "",
-            "topcats": "",
-            "ops_action": "",
-        })
+        props["likert_label"] = ""
+        props["p_event_txt"] = "—"
+        props["expected_txt"] = "—"
+        props["top1_category"] = ""
+        props["top2_category"] = ""
+        props["top3_category"] = ""
+        props["advice_txt"] = ""
+        props["fill_color"] = DEFAULT_FILL
 
-        if gid and gid in d.index:
-            r = d.loc[gid]
-            props["fill_color"] = r.get("fill_color", DEFAULT_FILL)
-            props["risk_level"] = str(r.get("risk_level", ""))
-            props["expected_txt"] = str(r.get("expected_txt", "—"))
-            props["harm_txt"] = str(r.get("harm_txt", "—"))
-            props["harm_icon"] = str(r.get("harm_icon", ""))
-            props["saha_notu"] = str(r.get("saha_notu", ""))
+        if key and key in dmap.index:
+            row = dmap.loc[key]  # Series
+            props["likert_label"] = str(row.get("likert_label", "") or "")
+            props["p_event_txt"] = str(row.get("p_event_txt", "—") or "—")
+            props["expected_txt"] = str(row.get("expected_txt", "—") or "—")
+            props["top1_category"] = str(row.get("top1_category", "") or "")
+            props["top2_category"] = str(row.get("top2_category", "") or "")
+            props["top3_category"] = str(row.get("top3_category", "") or "")
+            props["advice_txt"] = str(row.get("advice_txt", "") or "")
+            props["fill_color"] = row.get("fill_color", DEFAULT_FILL)
 
-            # top cats
-            cats = []
-            for i in (1, 2, 3):
-                c = str(r.get(f"top{i}_category", "") or "").strip()
-                sh = _safe_float(r.get(f"top{i}_share", np.nan))
-                if c and c.lower() != "unknown":
-                    if np.isfinite(sh) and sh > 0:
-                        cats.append(f"{c} ({sh*100:.0f}%)")
-                    else:
-                        cats.append(c)
-            props["topcats"] = " • ".join(cats[:3]) if cats else "—"
+        feats_out.append({**feat, "properties": props})
 
-            props["ops_action"] = str(r.get("ops_actions_short", "") or "")
-
-        feats.append({**f, "properties": props})
-
-    return {**gj, "features": feats}
+    return {**gj, "features": feats_out}
 
 
 # =============================================================================
@@ -338,40 +337,41 @@ def draw_map(gj: dict):
     layer = pdk.Layer(
         "GeoJsonLayer",
         gj,
-        filled=True,
         stroked=True,
-        get_fill_color="properties.fill_color",
         get_line_color=[80, 80, 80],
+        line_width_min_pixels=0.5,
+        filled=True,
+        get_fill_color="properties.fill_color",
         pickable=True,
         opacity=0.65,
     )
 
+    # Tooltip alanları: properties'e yazdık, burada doğrudan {field} kullanıyoruz
     tooltip = {
         "html": (
-            "<div style='min-width:260px'>"
-            "<b>GEOID:</b> {display_id}<br/>"
-            "<b>Risk:</b> {risk_level}<br/>"
-            "<b>Beklenen suç:</b> {expected_txt}<br/>"
-            "<b>Beklenen zarar:</b> {harm_txt} {harm_icon}<br/>"
-            "<b>Olası türler:</b> {topcats}<br/>"
-            "<b>Saha notu:</b> {saha_notu}<br/>"
-            "<b>Öneri:</b> {ops_action}"
-            "</div>"
+            "<div class='tt-title' style='font-weight:800; font-size:14px;'>GEOID: {display_id}</div>"
+            "<div><b>Risk Seviyesi:</b> {likert_label}</div>"
+            "<div><b>Suç olasılığı (p):</b> {p_event_txt}</div>"
+            "<div><b>Beklenen suç sayısı:</b> {expected_txt}</div>"
+            "<div class='tt-sep'></div>"
+            "<div class='tt-h' style='font-weight:800;'>En olası 3 suç</div>"
+            "<div class='tt-li'>• {top1_category}</div>"
+            "<div class='tt-li'>• {top2_category}</div>"
+            "<div class='tt-li'>• {top3_category}</div>"
+            "<div class='tt-sep'></div>"
+            "<div class='tt-h' style='font-weight:800;'>Kolluk Notu</div>"
+            "<div>{advice_txt}</div>"
         ),
         "style": {"backgroundColor": "#0b1220", "color": "white"},
     }
 
-    st.pydeck_chart(
-        pdk.Deck(
-            layers=[layer],
-            initial_view_state=pdk.ViewState(
-                latitude=37.7749, longitude=-122.4194, zoom=10
-            ),
-            tooltip=tooltip,
-            map_style="light",
-        ),
-        use_container_width=True,
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=pdk.ViewState(latitude=37.7749, longitude=-122.4194, zoom=10),
+        map_style="light",
+        tooltip=tooltip,
     )
+    st.pydeck_chart(deck, use_container_width=True)
 
 
 # =============================================================================
@@ -381,115 +381,114 @@ def render_anlik_risk_haritasi():
     _apply_tooltip_css()
 
     st.markdown("# 🗺️ Anlık Risk Haritası")
-    st.caption("Operasyon paneli: seçilen tarih + saat aralığında en riskli bölgeleri gösterir.")
 
-    df = load_ops_ready()
-    if df.empty:
-        st.error("OPS_READY verisi bulunamadı. (forecast_7d_ops_ready.parquet/csv)")
-        st.caption("Aranan aday yollar: " + " | ".join(OPS_CANDIDATES))
+    # Akademik/etik “kural” dili yerine karar-destek dili (hocanın eleştirisine uygun)
+    st.caption(
+        "San Francisco yerel saatine göre mevcut saat dilimindeki hücreler için göreli risk düzeylerini gösterir. "
+        "Çıktılar karar destek amaçlıdır; saha bilgisi ve amir değerlendirmesi ile birlikte yorumlanmalıdır."
+    )
+
+    if _IMPORT_SRC_ERR is not None:
+        st.error("`src.io_data` modülü import edilemedi. `src/` klasörünü ve dosya yollarını kontrol edin.")
+        st.code(repr(_IMPORT_SRC_ERR))
         return
 
-    # --- UI: Tarih + hour_range
-    now_date = _today_la()
-    now_hr = _hour_range_now()
-
-    # Tarih seçim listesi (dosyadan)
-    date_opts = sorted(pd.unique(df["date_only"].dropna()))
-    if not date_opts:
-        st.error("Veride date alanı okunamadı.")
-        return
-
-    # default date: bugün varsa bugün; yoksa en yakın (son)
-    today_str = str(now_date)
-    default_date = today_str if today_str in date_opts else date_opts[-1]
-
-    c1, c2 = st.columns([2, 3])
-    with c1:
-        sel_date = st.selectbox("📅 Tarih", options=date_opts, index=date_opts.index(default_date))
-    with c2:
-        sel_ranges = st.multiselect(
-            "⏰ Saat aralığı (hour_range)",
-            options=HOUR_RANGES,
-            default=[now_hr] if now_hr in HOUR_RANGES else [HOUR_RANGES[0]],
+    fc = load_forecast()
+    if fc.empty:
+        st.error(
+            "Forecast verisi bulunamadı/boş.\n\nBeklenen dosyalardan en az biri gerekli:\n"
+            + "\n".join([f"- {p}" for p in FC_CANDIDATES[:2]])
         )
-
-    if not sel_ranges:
-        st.warning("En az 1 saat aralığı seç.")
         return
 
-    df_sel = df[(df["date_only"] == str(sel_date)) & (df["hour_range"].isin(sel_ranges))].copy()
-    if df_sel.empty:
-        st.warning("Bu tarih/saat seçimi için kayıt yok.")
+    date_col = _pick_col(fc, ["date"])
+    hr_col = _pick_col(fc, ["hour_range", "hour_bucket"])
+    if not date_col or not hr_col:
+        st.error("Forecast içinde `date` ve/veya `hour_range` kolonu yok. `prepare_forecast` çıktısını kontrol edin.")
         return
 
-    # --- Sidebar: hızlı özet
-    st.sidebar.markdown("### 📌 Özet")
-    st.sidebar.write(f"**Tarih:** {sel_date}")
-    st.sidebar.write(f"**Saat:** {', '.join(sel_ranges)}")
-    st.sidebar.write(f"**Kayıt:** {len(df_sel):,}")
+    fc = fc.copy()
+    fc[date_col] = pd.to_datetime(fc[date_col], errors="coerce")
+    fc["date_norm"] = fc[date_col].dt.normalize()
 
-    # Kritik liste: expected_harm en yüksek Top-5
-    harm_col = _pick_col(df_sel, ["expected_harm", "harm_expected"])
-    rank_col = harm_col if harm_col else _pick_col(df_sel, ["risk_score", "risk_prob", "p_event"])
-    if rank_col:
-        top = df_sel.sort_values(rank_col, ascending=False).head(5)
-        st.sidebar.markdown("### 🚨 En Kritik 5 Bölge")
-        for _, r in top.iterrows():
-            gid = r.get("geoid", "")
-            hr = r.get("hour_range", "")
-            eh = r.get(harm_col, np.nan) if harm_col else np.nan
-            ex = r.get("expected_crimes", r.get("expected_count", np.nan))
-            note = saha_notu(r) or (r.get("ops_actions_short", "") or "Görünür devriye önerilir.")
-            st.sidebar.error(
-                f"**{gid}** • {hr}\n\n"
-                f"Beklenen suç: {_fmt_expected(ex)}\n\n"
-                f"Zarar: {_fmt_harm(eh) if harm_col else '—'}\n\n"
-                f"{note}"
-            )
+    now_sf = datetime.now(ZoneInfo(TARGET_TZ))
+    today = pd.Timestamp(now_sf.date())
 
-    # --- MAP
+    dates = sorted(fc["date_norm"].dropna().unique())
+    if not dates:
+        st.error("Forecast içinde geçerli tarih bulunamadı.")
+        return
+
+    sel_date = today if today in dates else max([d for d in dates if d <= today], default=dates[0])
+
+    labels = sorted(fc[hr_col].dropna().astype(str).unique().tolist())
+    hr_label = _hour_to_bucket(now_sf.hour, labels) or (labels[0] if labels else None)
+    if not hr_label:
+        st.error("Forecast içinde saat dilimi bulunamadı.")
+        return
+
+    st.caption(f"SF saati: **{now_sf:%Y-%m-%d %H:%M}**  •  Tarih: **{pd.Timestamp(sel_date).date()}**  •  Dilim: **{hr_label}**")
+
+    df_hr = fc[(fc["date_norm"] == sel_date) & (fc[hr_col].astype(str) == str(hr_label))].copy()
+    if df_hr.empty:
+        st.warning("Bu tarih/saat dilimi için kayıt bulunamadı.")
+        return
+
     gj = load_geojson()
     if not gj:
-        st.error("GeoJSON bulunamadı: sf_cells.geojson")
+        st.error(f"GeoJSON bulunamadı: `{GEOJSON_PATH}` (polygonlar gerekli).")
         return
 
-    gj_enriched = enrich_geojson(gj, df_sel)
+    # Legend / açıklama: modern "popover"
+    # (harita içi overlay Streamlit+pydeck’te zor; bu çözüm temiz ve kurumsal)
+    lik, meta = _compute_likert_quintiles(df_hr)
+    q20, q40, q60, q80 = meta["cuts"]
+    src_col = meta["source_col"] or "risk_score"
+
+    with st.popover("🎨 Risk Ölçeği", use_container_width=False):
+        st.markdown(
+            "Risk düzeyleri, **bu tarih ve saat dilimindeki hücre risk skorlarının dağılımına göre** "
+            "(eşit dilimler / %20’lik dilimler) sınıflandırılmıştır."
+        )
+        st.caption(f"Kullanılan risk metriği: **{src_col}**")
+        # Yüzdelik dilimler sabit (0–20, 20–40...), kesim değerlerini de ekleyelim:
+        # (değerler NaN olabilir; o durumda çizgi göstermeyiz)
+        def _qtxt(x):
+            return "—" if not np.isfinite(_safe_float(x)) else f"{float(x):.3f}"
+
+        rows = [
+            (1, "Çok Düşük", "0–20",  None, _qtxt(q20)),
+            (2, "Düşük",     "20–40", _qtxt(q20), _qtxt(q40)),
+            (3, "Orta",      "40–60", _qtxt(q40), _qtxt(q60)),
+            (4, "Yüksek",    "60–80", _qtxt(q60), _qtxt(q80)),
+            (5, "Çok Yüksek","80–100",_qtxt(q80), None),
+        ]
+        for k, label, pct, lo, hi in rows:
+            rgb = LIKERT[k][1]
+            rng = f"{lo}–{hi}" if (lo is not None and hi is not None) else (f"≤ {hi}" if lo is None else f"> {lo}")
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid #e2e8f0; border-radius:12px; margin-bottom:8px;">
+                  <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:14px;height:14px;border-radius:4px;background:rgb({rgb[0]},{rgb[1]},{rgb[2]});"></div>
+                    <div style="font-weight:700;">{k}</div>
+                    <div>{label}</div>
+                  </div>
+                  <div style="color:#64748b; font-size:12px; text-align:right;">
+                    %{pct}<br/>
+                    <span style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;">
+                      {rng}
+                    </span>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # Harita
+    gj_enriched = enrich_geojson(gj, df_hr)
     draw_map(gj_enriched)
 
-    # --- ALT PANEL: Seçili GEOID -> kritik saatler
-    st.divider()
-    st.subheader("⏰ Seçili Bölge İçin Kritik Zaman")
-
-    sel_geoid = st.text_input("GEOID (isteğe bağlı)", "")
-    if sel_geoid:
-        gid = _digits11(sel_geoid)
-        g = df[(df["geoid"] == gid)].copy()
-        if g.empty:
-            st.warning("Bu GEOID için veri bulunamadı.")
-            return
-
-        g = g[g["date_only"] == str(sel_date)]
-        if g.empty:
-            st.warning("Bu GEOID için seçilen tarihte veri yok.")
-            return
-
-        if rank_col and rank_col in g.columns:
-            score = pd.to_numeric(g[rank_col], errors="coerce")
-            g["_score"] = score
-            g = g.sort_values("_score", ascending=False)
-            top_hr = g[["hour_range", "_score"]].dropna().head(3)
-
-            if not top_hr.empty:
-                hrs = top_hr["hour_range"].tolist()
-                st.info(f"Bu bölgede en kritik saat aralıkları: **{', '.join(hrs)}**")
-
-        # küçük tablo: ops metinleri
-        show_cols = []
-        for c in ["hour_range", "risk_level", "expected_crimes", "expected_harm", "top1_category", "top2_category", "top3_category", "ops_actions_short"]:
-            if c in g.columns:
-                show_cols.append(c)
-        if show_cols:
-            st.dataframe(g.sort_values(rank_col, ascending=False).head(12)[show_cols], use_container_width=True)
-
-
-# Streamlit multipage çağırır (app.py içinden)
+    st.caption(
+        "İpucu: Hücrelerin üzerine gelerek (hover) detayları görüntüleyebilirsiniz."
+    )
